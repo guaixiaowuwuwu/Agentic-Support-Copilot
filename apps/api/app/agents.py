@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 from contextlib import contextmanager
-from typing import Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 from .knowledge import Retriever, create_default_retriever
 from .llm import ChatClient, LLMError
@@ -205,13 +205,11 @@ class SupportAgentWorkflow:
     def _execute_optional_tools(self, run: AgentRun, ticket: Ticket, triage: Dict[str, str]) -> List[ToolCall]:
         planned_tools = self.tools.plan(ticket, triage)
         tool_calls: List[ToolCall] = []
-        denied = 0
 
         for tool_name in planned_tools:
             try:
-                call = self.tools.execute(run.id, tool_name, ticket)
+                call = self.tools.execute(run.id, tool_name, ticket, triage)
             except ToolPermissionError as exc:
-                denied += 1
                 call = ToolCall(
                     run_id=run.id,
                     tool_name=tool_name,
@@ -220,11 +218,15 @@ class SupportAgentWorkflow:
                     output_summary=str(exc),
                 )
             self.store.add_tool_call(call)
+            self._audit_tool_call(ticket, call)
             tool_calls.append(call)
 
         if planned_tools:
-            status = "success" if denied == 0 else "blocked"
-            summary = f"Executed {len(planned_tools) - denied} tools; denied {denied} by whitelist."
+            successful = sum(1 for call in tool_calls if call.status == "success")
+            denied = sum(1 for call in tool_calls if call.status == "denied")
+            failed = sum(1 for call in tool_calls if call.status == "failed")
+            status = "success" if denied == 0 and failed == 0 else "blocked"
+            summary = f"Executed {successful} read-only tools; failed {failed}; denied {denied} by whitelist."
         else:
             status = "success"
             summary = "No tool call required for this ticket."
@@ -410,7 +412,7 @@ class SupportAgentWorkflow:
         action: str,
         target_type: str,
         target_id: str,
-        metadata: Dict[str, str],
+        metadata: Dict[str, Any],
     ) -> None:
         self.store.add_audit(
             AuditLog(
@@ -421,4 +423,26 @@ class SupportAgentWorkflow:
                 target_id=target_id,
                 metadata=metadata,
             )
+        )
+
+    def _audit_tool_call(self, ticket: Ticket, call: ToolCall) -> None:
+        action_by_status = {
+            "success": "tool_call_succeeded",
+            "failed": "tool_call_failed",
+            "denied": "tool_call_denied",
+        }
+        self._audit(
+            ticket.tenant_id,
+            "system",
+            action_by_status.get(call.status, "tool_call_recorded"),
+            "tool_call",
+            call.id,
+            {
+                "run_id": call.run_id,
+                "ticket_id": ticket.id,
+                "tool_name": call.tool_name,
+                "status": call.status,
+                "input_summary": call.input_summary,
+                "output_summary": call.output_summary,
+            },
         )

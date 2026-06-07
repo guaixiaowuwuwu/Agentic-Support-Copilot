@@ -99,14 +99,14 @@ class PostgresStorePersistenceTest(unittest.TestCase):
             ["log_search", "db_read"],
         )
         self.assertEqual(approval.status, "pending")
-        self.assertEqual(len(reloaded.list_audit_logs("acme")), 1)
+        self.assertEqual(len(reloaded.list_audit_logs("acme")), 3)
 
         completed = SupportAgentWorkflow(reloaded).approve(approval.id, decided_by="lead@example.com")
         finished_ticket = reloaded.get_ticket(ticket.id)
 
         self.assertEqual(completed.status, "completed")
         self.assertEqual(finished_ticket.status, "replied")
-        self.assertEqual(len(reloaded.list_audit_logs("acme")), 2)
+        self.assertEqual(len(reloaded.list_audit_logs("acme")), 4)
 
     def test_document_ingestion_writes_vectors_and_pgvector_search_is_tenant_scoped(self) -> None:
         self.store.add_document(

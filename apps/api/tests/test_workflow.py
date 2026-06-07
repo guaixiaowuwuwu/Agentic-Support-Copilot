@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import sys
+import sqlite3
+import tempfile
 import unittest
 from pathlib import Path
 from typing import Dict, Sequence
@@ -13,7 +15,7 @@ from app.knowledge import EMBEDDING_DIMENSIONS, KeywordRetriever, VectorRetrieve
 from app.llm import LLMError
 from app.models import Document, Evidence, Ticket
 from app.store import InMemoryStore
-from app.tools import ToolPermissionError, ToolRegistry
+from app.tools import LogSearchTool, ReadOnlyDatabaseTool, ToolPermissionError, ToolRegistry
 
 
 class FakeChatClient:
@@ -43,6 +45,14 @@ class FailingChatClient:
     ) -> str:
         del messages, temperature, max_tokens
         raise LLMError("simulated outage")
+
+
+class FakeToolBackend:
+    def __init__(self, output: str) -> None:
+        self.output = output
+
+    def execute(self, context) -> str:
+        return self.output
 
 
 class SupportWorkflowTest(unittest.TestCase):
@@ -77,6 +87,8 @@ class SupportWorkflowTest(unittest.TestCase):
         tool_calls = store.get_tool_calls_for_run(run.id)
         self.assertEqual([call.tool_name for call in tool_calls], ["log_search", "db_read"])
         self.assertTrue(all(call.status == "success" for call in tool_calls))
+        audit_actions = [audit.action for audit in store.list_audit_logs("acme")]
+        self.assertEqual(audit_actions.count("tool_call_succeeded"), 2)
 
         approval = store.get_approval(run.approval_id or "")
         self.assertEqual(approval.status, "pending")
@@ -268,6 +280,114 @@ class SupportWorkflowTest(unittest.TestCase):
         self.assertEqual(calls[0].status, "success")
         self.assertEqual(calls[1].status, "denied")
         self.assertEqual(calls[1].tool_name, "db_read")
+        audit_actions = [audit.action for audit in store.list_audit_logs("acme")]
+        self.assertIn("tool_call_denied", audit_actions)
+
+    def test_log_search_backend_reads_configured_files_and_redacts_secrets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = Path(tmpdir) / "auth.log"
+            log_path.write_text(
+                "\n".join(
+                    [
+                        "tenant_id=globex request_id=req_123 status=401 bearer globex-token",
+                        "tenant_id=acme request_id=req_123 status=401 bearer acme-secret-token scope=read",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            registry = ToolRegistry(
+                allowed_tools=["log_search"],
+                backends={"log_search": LogSearchTool([str(log_path)])},
+            )
+            ticket = Ticket(
+                tenant_id="acme",
+                customer_name="Alice",
+                channel="email",
+                subject="API 401",
+                description="request_id=req_123 bearer leaked-token",
+            )
+
+            call = registry.execute("run-id", "log_search", ticket)
+
+        self.assertEqual(call.status, "success")
+        self.assertIn("found 1 tenant-scoped matches", call.output_summary)
+        self.assertIn("[REDACTED]", call.output_summary)
+        self.assertNotIn("globex-token", call.output_summary)
+        self.assertNotIn("acme-secret-token", call.output_summary)
+
+    def test_readonly_database_backend_executes_select_and_blocks_writes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "support.db"
+            conn = sqlite3.connect(db_path)
+            conn.execute("CREATE TABLE request_metadata (tenant_id TEXT, request_id TEXT, status TEXT, reason TEXT)")
+            conn.execute(
+                "INSERT INTO request_metadata VALUES (?, ?, ?, ?)",
+                ("acme", "req_123", "401", "expired token"),
+            )
+            conn.commit()
+            conn.close()
+
+            ticket = Ticket(
+                tenant_id="acme",
+                customer_name="Alice",
+                channel="email",
+                subject="API 401",
+                description="request_id=req_123",
+            )
+            db_url = f"sqlite:///{db_path}"
+            readonly_registry = ToolRegistry(
+                allowed_tools=["db_read"],
+                backends={
+                    "db_read": ReadOnlyDatabaseTool(
+                        database_url=db_url,
+                        query=(
+                            "SELECT status, reason FROM request_metadata "
+                            "WHERE tenant_id = :tenant_id AND request_id = :request_id"
+                        ),
+                    )
+                },
+            )
+            write_registry = ToolRegistry(
+                allowed_tools=["db_read"],
+                backends={
+                    "db_read": ReadOnlyDatabaseTool(
+                        database_url=db_url,
+                        query="UPDATE request_metadata SET status = '200'",
+                    )
+                },
+            )
+
+            read_call = readonly_registry.execute("run-id", "db_read", ticket)
+            write_call = write_registry.execute("run-id", "db_read", ticket)
+
+        self.assertEqual(read_call.status, "success")
+        self.assertIn("expired token", read_call.output_summary)
+        self.assertEqual(write_call.status, "failed")
+        self.assertIn("Only SELECT or WITH", write_call.output_summary)
+
+    def test_bug_reports_plan_readonly_jira_and_github_searches(self) -> None:
+        registry = ToolRegistry(
+            allowed_tools=["jira_search", "github_search"],
+            backends={
+                "jira_search": FakeToolBackend("Jira read-only result"),
+                "github_search": FakeToolBackend("GitHub read-only result"),
+            },
+        )
+        ticket = Ticket(
+            tenant_id="acme",
+            customer_name="Dana",
+            channel="email",
+            subject="Checkout bug",
+            description="Customer sees an outage-level checkout bug.",
+        )
+
+        planned = registry.plan(ticket, {"issue_type": "bug", "priority": "P1"})
+        jira_call = registry.execute("run-id", "jira_search", ticket)
+        github_call = registry.execute("run-id", "github_search", ticket)
+
+        self.assertEqual(planned, ["jira_search", "github_search"])
+        self.assertEqual(jira_call.output_summary, "Jira read-only result")
+        self.assertEqual(github_call.output_summary, "GitHub read-only result")
 
 
 if __name__ == "__main__":

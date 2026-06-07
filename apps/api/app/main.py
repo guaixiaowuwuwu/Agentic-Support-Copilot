@@ -22,9 +22,10 @@ from .llm import create_chat_client_from_env, llm_status_from_env
 from .models import AuditLog, Document, Ticket, to_dict
 from .schemas import ApprovalDecisionRequest, CreateDocumentRequest, CreateTicketRequest, IngestEmbeddingsRequest
 from .store import NotFoundError, create_store
+from .tools import create_tool_registry_from_env
 
 store = create_store(seed=True)
-workflow = SupportAgentWorkflow(store, chat_client=create_chat_client_from_env())
+workflow = SupportAgentWorkflow(store, tools=create_tool_registry_from_env(), chat_client=create_chat_client_from_env())
 
 app = FastAPI(title="Agentic Support Copilot API", version="0.1.0")
 app.add_middleware(
@@ -79,6 +80,10 @@ def health() -> dict:
         "graph_engine": graph_engine_name(),
         "workflow_nodes": WORKFLOW_NODES,
         "llm": llm_status_from_env(),
+        "tools": {
+            "allowed": sorted(workflow.tools.allowed_tools),
+            "configured_backends": workflow.tools.configured_backends(),
+        },
     }
 
 

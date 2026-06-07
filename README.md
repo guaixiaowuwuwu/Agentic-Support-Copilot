@@ -22,7 +22,12 @@ apps/web      Next.js dashboard
 packages/shared  Shared TypeScript types
 infra         Docker Compose and SQL schema
 scripts       Local developer helpers
+docs          Future enhancement notes and planning docs
 ```
+
+## Planning Docs
+
+- [Future Enhancements](docs/FUTURE_ENHANCEMENTS.md): roadmap notes for role-based workspaces, knowledge management, audit views, and production identity upgrades.
 
 ## Run The Backend
 
@@ -99,6 +104,35 @@ export LLM_API_KEY=your-api-key
 For local OpenAI-compatible runtimes such as Ollama, vLLM, or LM Studio, point
 `LLM_BASE_URL` at that server and set `LLM_MODEL` to the local model name. The
 API key and base URL are never returned by `/api/health`.
+
+## Read-Only External Tools
+
+Agent tool calls still go through an explicit whitelist:
+
+```bash
+export SUPPORT_COPILOT_ALLOWED_TOOLS=log_search,db_read,jira_search,github_search
+```
+
+Without external configuration, these tools keep deterministic demo summaries.
+To connect real private backends, configure only the read paths you want:
+
+```bash
+export SUPPORT_COPILOT_LOG_PATHS=/var/log/support-copilot/auth.log
+export SUPPORT_COPILOT_READONLY_DATABASE_URL=postgresql://readonly:readonly@localhost:5432/support_metadata
+export SUPPORT_COPILOT_READONLY_DB_QUERY='SELECT status, reason, updated_at FROM request_metadata WHERE tenant_id = %(tenant_id)s AND request_id = %(request_id)s LIMIT 5'
+export SUPPORT_COPILOT_JIRA_BASE_URL=https://example.atlassian.net
+export SUPPORT_COPILOT_JIRA_EMAIL=support@example.com
+export SUPPORT_COPILOT_JIRA_API_TOKEN=your-token
+export SUPPORT_COPILOT_JIRA_PROJECT_KEY=SUP
+export SUPPORT_COPILOT_GITHUB_REPOS=example-org/example-repo
+export SUPPORT_COPILOT_GITHUB_TOKEN=your-token
+```
+
+The DB tool rejects non-`SELECT`/`WITH` SQL, requires a bound `tenant_id`
+parameter, and opens PostgreSQL transactions as read-only. Jira and GitHub
+integrations search existing issues only; they do not create or update external
+tickets. Every allowed, failed, or denied tool call is stored as a `ToolCall`
+summary and also recorded in `audit_logs`.
 
 Backfill missing chunk embeddings after importing or migrating documents:
 
