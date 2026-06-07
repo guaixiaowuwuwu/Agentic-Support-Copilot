@@ -97,6 +97,41 @@ textarea {
   color: var(--text);
 }
 
+.user-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  max-width: 260px;
+  min-height: 38px;
+  padding: 0 11px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #f8fafb;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.user-chip svg {
+  color: var(--accent);
+  flex: 0 0 auto;
+}
+
+.user-chip span,
+.user-chip small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.user-chip small {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
 .language-toggle {
   display: inline-flex;
   align-items: center;
@@ -266,6 +301,11 @@ textarea {
   padding: 10px 11px;
   background: #fff;
   color: var(--text);
+}
+
+input[readonly] {
+  background: #f4f7f8;
+  color: var(--muted);
 }
 
 textarea {
@@ -570,7 +610,13 @@ tr:last-child td {
 
   .topbar-actions {
     width: 100%;
+    flex-wrap: wrap;
     justify-content: space-between;
+  }
+
+  .user-chip {
+    flex: 1 1 auto;
+    max-width: calc(100% - 96px);
   }
 
   .metrics-grid,
@@ -585,6 +631,10 @@ tr:last-child td {
 @media (max-width: 560px) {
   .topbar {
     padding: 14px 16px;
+  }
+
+  .user-chip small {
+    display: none;
   }
 
   .page {

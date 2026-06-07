@@ -5,10 +5,11 @@ from contextlib import contextmanager
 from typing import Dict, Iterable, List, Optional
 
 from .knowledge import Retriever, create_default_retriever
+from .llm import ChatClient, LLMError
 from .models import AgentRun, AgentStep, Approval, AuditLog, Evidence, Ticket, ToolCall
 from .store import Store
 from .time_utils import utc_now
-from .tools import ToolPermissionError, ToolRegistry
+from .tools import ToolPermissionError, ToolRegistry, redact_secrets
 
 
 @contextmanager
@@ -31,10 +32,12 @@ class SupportAgentWorkflow:
         store: Store,
         retriever: Optional[Retriever] = None,
         tools: Optional[ToolRegistry] = None,
+        chat_client: Optional[ChatClient] = None,
     ) -> None:
         self.store = store
         self.retriever = retriever or create_default_retriever(store)
         self.tools = tools or ToolRegistry()
+        self.chat_client = chat_client
 
     def start_run(self, ticket_id: str) -> AgentRun:
         ticket = self.store.get_ticket(ticket_id)
@@ -243,6 +246,28 @@ class SupportAgentWorkflow:
         evidence: List[Evidence],
         tool_calls: List[ToolCall],
     ) -> str:
+        fallback_reply = self._compose_template_reply(ticket, triage, evidence, tool_calls)
+        if not evidence or self.chat_client is None:
+            return fallback_reply
+
+        try:
+            llm_reply = self.chat_client.complete(
+                self._reply_messages(ticket, triage, evidence, tool_calls),
+                temperature=0.2,
+                max_tokens=700,
+            )
+        except LLMError:
+            return fallback_reply
+
+        return self._normalize_llm_reply(llm_reply, evidence, fallback_reply)
+
+    def _compose_template_reply(
+        self,
+        ticket: Ticket,
+        triage: Dict[str, str],
+        evidence: List[Evidence],
+        tool_calls: List[ToolCall],
+    ) -> str:
         if not evidence:
             return (
                 f"您好 {ticket.customer_name}，我们需要人工继续排查这个问题。当前信息不足以安全生成带引用的结论，"
@@ -266,6 +291,67 @@ class SupportAgentWorkflow:
             "如果确认 token 已过期，请生成新 token 后用同一个 request_id 重试。\n\n"
             f"引用来源：\n{evidence_lines}"
         )
+
+    def _reply_messages(
+        self,
+        ticket: Ticket,
+        triage: Dict[str, str],
+        evidence: List[Evidence],
+        tool_calls: List[ToolCall],
+    ) -> List[Dict[str, str]]:
+        evidence_lines = "\n".join(
+            f"[{index}] {item.title} - {item.uri}\n摘要：{item.excerpt}"
+            for index, item in enumerate(evidence, start=1)
+        )
+        tool_lines = "\n".join(
+            f"- {call.tool_name}: {call.output_summary}" for call in tool_calls if call.status == "success"
+        )
+        if not tool_lines:
+            tool_lines = "- 当前无需额外工具动作。"
+
+        return [
+            {
+                "role": "system",
+                "content": (
+                    "你是企业客服协作系统的回复草稿生成器。只根据给定工单、检索证据和工具摘要写中文回复。"
+                    "不要编造证据，不要要求客户发送原始密钥、token 或 API key，不要承诺已经修改客户数据。"
+                    "回复必须适合提交给人工审批，末尾必须包含“引用来源：”，引用格式严格使用“[编号] 标题 - URI”。"
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    "请生成一份客户可读的支持回复草稿。\n\n"
+                    f"客户：{ticket.customer_name}\n"
+                    f"渠道：{ticket.channel}\n"
+                    f"主题：{redact_secrets(ticket.subject)}\n"
+                    f"描述：{redact_secrets(ticket.description)}\n"
+                    f"分诊：issue_type={triage['issue_type']}, priority={triage['priority']}, "
+                    f"risk_level={triage['risk_level']}\n\n"
+                    f"工具摘要：\n{tool_lines}\n\n"
+                    f"可引用证据：\n{evidence_lines}"
+                ),
+            },
+        ]
+
+    def _normalize_llm_reply(self, llm_reply: str, evidence: List[Evidence], fallback_reply: str) -> str:
+        reply = redact_secrets(llm_reply).strip()
+        if not reply:
+            return fallback_reply
+
+        if "修改客户数据" in reply:
+            return fallback_reply
+
+        if "原始密钥" not in reply or "不要" not in reply:
+            reply = f"{reply}\n\n请不要通过工单发送原始密钥、token 或 API key。"
+
+        if "引用来源" not in reply or "[1]" not in reply:
+            citation_lines = "\n".join(
+                f"[{index}] {item.title} - {item.uri}" for index, item in enumerate(evidence, start=1)
+            )
+            reply = f"{reply}\n\n引用来源：\n{citation_lines}"
+
+        return reply
 
     def _verify(self, draft_reply: str, evidence: List[Evidence], triage: Dict[str, str]) -> Dict[str, object]:
         has_sources = bool(evidence) and "引用来源" in draft_reply and "[1]" in draft_reply

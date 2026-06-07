@@ -5,7 +5,7 @@ import { PlusCircle } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { FormEvent, useState } from "react";
 
-import { apiPost } from "@/lib/api";
+import { apiPost, userContext } from "@/lib/api";
 import { dictionaries, normalizeLocale, type Locale } from "@/lib/i18n";
 
 export function TicketCreator({ locale }: { locale?: Locale }) {
@@ -44,7 +44,7 @@ export function TicketCreator({ locale }: { locale?: Locale }) {
       <div className="form-row">
         <label>
           {dict.tenant}
-          <input name="tenant_id" defaultValue="acme" />
+          <input name="tenant_id" value={userContext.tenant_id} readOnly />
         </label>
         <label>
           {dict.customer}

@@ -5,7 +5,7 @@ import { CheckCircle2, PlayCircle, XCircle } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
-import { apiPost } from "@/lib/api";
+import { apiPost, userContext } from "@/lib/api";
 import { dictionaries, normalizeLocale, type Locale } from "@/lib/i18n";
 
 export function StartRunButton({ ticketId, locale }: { ticketId: string; locale?: Locale }) {
@@ -43,7 +43,7 @@ export function ApprovalButtons({ approvalId, locale }: { approvalId: string; lo
     setIsBusy(true);
     try {
       await apiPost<AgentRun>(`/api/approvals/${approvalId}/${action}`, {
-        decided_by: "support.lead",
+        decided_by: userContext.email,
         note: action === "approve" ? dict.approvedNote : dict.rejectedNote
       });
       router.refresh();

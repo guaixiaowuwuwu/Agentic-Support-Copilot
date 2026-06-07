@@ -3,15 +3,46 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
+from typing import Dict, Sequence
 
 API_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(API_ROOT))
 
 from app.agents import SupportAgentWorkflow
 from app.knowledge import EMBEDDING_DIMENSIONS, KeywordRetriever, VectorRetriever
+from app.llm import LLMError
 from app.models import Document, Evidence, Ticket
 from app.store import InMemoryStore
 from app.tools import ToolPermissionError, ToolRegistry
+
+
+class FakeChatClient:
+    def __init__(self, reply: str) -> None:
+        self.reply = reply
+        self.messages: Sequence[Dict[str, str]] = []
+
+    def complete(
+        self,
+        messages: Sequence[Dict[str, str]],
+        *,
+        temperature: float = 0.2,
+        max_tokens: int = 700,
+    ) -> str:
+        del temperature, max_tokens
+        self.messages = messages
+        return self.reply
+
+
+class FailingChatClient:
+    def complete(
+        self,
+        messages: Sequence[Dict[str, str]],
+        *,
+        temperature: float = 0.2,
+        max_tokens: int = 700,
+    ) -> str:
+        del messages, temperature, max_tokens
+        raise LLMError("simulated outage")
 
 
 class SupportWorkflowTest(unittest.TestCase):
@@ -57,6 +88,70 @@ class SupportWorkflowTest(unittest.TestCase):
         self.assertEqual(completed.status, "completed")
         self.assertEqual(updated_ticket.status, "replied")
         self.assertIn("API 401", updated_ticket.final_reply or "")
+
+    def test_configured_llm_generates_approval_draft(self) -> None:
+        store = InMemoryStore(seed=True)
+        chat_client = FakeChatClient(
+            "您好 Alice，模型生成的草稿会先建议检查 Bearer token、过期时间和 OAuth scope。"
+            "请不要通过工单发送原始密钥。\n\n"
+            "引用来源：\n[1] API Authentication Runbook - kb://api/authentication-runbook"
+        )
+        workflow = SupportAgentWorkflow(store, chat_client=chat_client)
+        ticket = store.create_ticket(
+            Ticket(
+                tenant_id="acme",
+                customer_name="Alice",
+                channel="email",
+                subject="API 报 401",
+                description="客户说 API 报 401，帮我排查并回复。request_id=req_123",
+            )
+        )
+
+        run = workflow.start_run(ticket.id)
+        approval = store.get_approval(run.approval_id or "")
+
+        self.assertTrue(run.verifier_report["passed"])
+        self.assertIn("模型生成的草稿", approval.proposed_reply)
+        self.assertEqual(chat_client.messages[0]["role"], "system")
+
+    def test_llm_reply_is_normalized_for_required_guardrails(self) -> None:
+        store = InMemoryStore(seed=True)
+        workflow = SupportAgentWorkflow(store, chat_client=FakeChatClient("您好 Alice，模型草稿建议先检查认证配置。"))
+        ticket = store.create_ticket(
+            Ticket(
+                tenant_id="acme",
+                customer_name="Alice",
+                channel="email",
+                subject="API 报 401",
+                description="客户说 API 报 401，帮我排查并回复。request_id=req_123",
+            )
+        )
+
+        run = workflow.start_run(ticket.id)
+        approval = store.get_approval(run.approval_id or "")
+
+        self.assertTrue(run.verifier_report["passed"])
+        self.assertIn("请不要通过工单发送原始密钥", approval.proposed_reply)
+        self.assertIn("引用来源", approval.proposed_reply)
+
+    def test_llm_failure_falls_back_to_template_reply(self) -> None:
+        store = InMemoryStore(seed=True)
+        workflow = SupportAgentWorkflow(store, chat_client=FailingChatClient())
+        ticket = store.create_ticket(
+            Ticket(
+                tenant_id="acme",
+                customer_name="Alice",
+                channel="email",
+                subject="API 报 401",
+                description="客户说 API 报 401，帮我排查并回复。request_id=req_123",
+            )
+        )
+
+        run = workflow.start_run(ticket.id)
+        approval = store.get_approval(run.approval_id or "")
+
+        self.assertTrue(run.verifier_report["passed"])
+        self.assertIn("最可能的原因", approval.proposed_reply)
 
     def test_missing_evidence_is_routed_to_manual_review(self) -> None:
         store = InMemoryStore(seed=False)

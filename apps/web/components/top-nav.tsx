@@ -1,7 +1,8 @@
-import { Bot, ClipboardList, GitBranch, ShieldCheck } from "lucide-react";
+import { Bot, ClipboardList, GitBranch, ShieldCheck, UserRound } from "lucide-react";
 import Link from "next/link";
 
 import { LanguageToggle } from "@/components/language-toggle";
+import { userContext } from "@/lib/api";
 import type { Dictionary, Locale } from "@/lib/i18n";
 
 export function TopNav({ dict, locale }: { dict: Dictionary; locale: Locale }) {
@@ -26,6 +27,11 @@ export function TopNav({ dict, locale }: { dict: Dictionary; locale: Locale }) {
             {dict.nav.trace}
           </Link>
         </nav>
+        <div className="user-chip" title={`${userContext.email} · ${userContext.roles.join(", ")}`}>
+          <UserRound size={16} />
+          <span>{userContext.tenant_id}</span>
+          <small>{userContext.email}</small>
+        </div>
         <LanguageToggle locale={locale} />
       </div>
     </header>

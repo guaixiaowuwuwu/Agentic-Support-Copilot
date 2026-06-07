@@ -11,6 +11,8 @@ Enterprise knowledge base and ticket automation MVP with a multi-agent support w
 - 1536-dimensional deterministic local embeddings for private MVP ingestion, with pgvector cosine retrieval and tenant-scoped evidence queries.
 - Optional in-memory store for fast local tests and demos.
 - Unit tests covering triage/RAG/verifier, tenant isolation, and tool permissions.
+- Optional OpenAI-compatible chat API integration for customer reply draft generation,
+  with deterministic template fallback when disabled or unavailable.
 
 ## Repository Layout
 
@@ -53,11 +55,60 @@ Health check:
 curl http://localhost:8000/api/health
 ```
 
+## Auth, Tenant Scope, And RBAC
+
+All business APIs require an authenticated user context. The MVP expects these
+headers from a trusted private ingress, API gateway, or local frontend:
+
+```text
+X-User-Email: lead@acme.example
+X-Tenant-Id: acme
+X-Tenant-Ids: acme
+X-User-Roles: support_agent,approver
+```
+
+`X-Tenant-Id` is the active tenant. `X-Tenant-Ids` is the authenticated tenant
+scope and defaults to the active tenant when omitted. Cross-tenant object reads
+return 404 so IDs from another tenant are not disclosed. Approval decisions
+require `approver` or `admin`; knowledge writes and embedding ingestion require
+`knowledge_admin` or `admin`.
+
+The local frontend sends these headers from:
+
+```text
+NEXT_PUBLIC_SUPPORT_COPILOT_USER_EMAIL
+NEXT_PUBLIC_SUPPORT_COPILOT_TENANT_ID
+NEXT_PUBLIC_SUPPORT_COPILOT_TENANT_IDS
+NEXT_PUBLIC_SUPPORT_COPILOT_USER_ROLES
+```
+
+## Optional LLM API
+
+The backend can call an OpenAI-compatible `/chat/completions` API when drafting
+the customer reply. If it is disabled, not configured, or temporarily fails, the
+workflow falls back to the deterministic template reply so local demos and tests
+keep working.
+
+```bash
+export SUPPORT_COPILOT_LLM_ENABLED=true
+export LLM_BASE_URL=https://api.openai.com/v1
+export LLM_MODEL=gpt-4.1-mini
+export LLM_API_KEY=your-api-key
+```
+
+For local OpenAI-compatible runtimes such as Ollama, vLLM, or LM Studio, point
+`LLM_BASE_URL` at that server and set `LLM_MODEL` to the local model name. The
+API key and base URL are never returned by `/api/health`.
+
 Backfill missing chunk embeddings after importing or migrating documents:
 
 ```bash
 curl -X POST http://localhost:8000/api/knowledge/embeddings/ingest \
   -H 'Content-Type: application/json' \
+  -H 'X-User-Email: kb-admin@acme.example' \
+  -H 'X-Tenant-Id: acme' \
+  -H 'X-Tenant-Ids: acme' \
+  -H 'X-User-Roles: knowledge_admin' \
   -d '{"tenant_id":"acme"}'
 ```
 

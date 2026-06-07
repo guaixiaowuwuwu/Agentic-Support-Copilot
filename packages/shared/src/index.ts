@@ -101,3 +101,9 @@ export interface RunTrace {
   approval?: Approval | null;
 }
 
+export interface UserContext {
+  email: string;
+  tenant_id: string;
+  tenant_ids: string[];
+  roles: string[];
+}

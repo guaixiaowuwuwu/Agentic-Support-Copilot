@@ -1,10 +1,39 @@
-import type { AgentRun, Approval, RunTrace, Ticket } from "@support-copilot/shared";
+import type { AgentRun, Approval, RunTrace, Ticket, UserContext } from "@support-copilot/shared";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
 
+function splitCsv(value: string | undefined, fallback: string[]): string[] {
+  const items = value
+    ?.split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  return items?.length ? items : fallback;
+}
+
+export const userContext: UserContext = {
+  email: process.env.NEXT_PUBLIC_SUPPORT_COPILOT_USER_EMAIL ?? "lead@acme.example",
+  tenant_id: process.env.NEXT_PUBLIC_SUPPORT_COPILOT_TENANT_ID ?? "acme",
+  tenant_ids: splitCsv(process.env.NEXT_PUBLIC_SUPPORT_COPILOT_TENANT_IDS, [
+    process.env.NEXT_PUBLIC_SUPPORT_COPILOT_TENANT_ID ?? "acme"
+  ]),
+  roles: splitCsv(process.env.NEXT_PUBLIC_SUPPORT_COPILOT_USER_ROLES, ["support_agent", "approver"])
+};
+
+function authHeaders(): Record<string, string> {
+  return {
+    "X-User-Email": userContext.email,
+    "X-Tenant-Id": userContext.tenant_id,
+    "X-Tenant-Ids": userContext.tenant_ids.join(","),
+    "X-User-Roles": userContext.roles.join(",")
+  };
+}
+
 export async function apiGet<T>(path: string, fallback: T): Promise<T> {
   try {
-    const response = await fetch(`${API_BASE}${path}`, { cache: "no-store" });
+    const response = await fetch(`${API_BASE}${path}`, {
+      cache: "no-store",
+      headers: authHeaders()
+    });
     if (!response.ok) {
       return fallback;
     }
@@ -17,7 +46,7 @@ export async function apiGet<T>(path: string, fallback: T): Promise<T> {
 export async function apiPost<T>(path: string, body: unknown = {}): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify(body)
   });
   if (!response.ok) {
@@ -197,4 +226,3 @@ export const demoTrace: RunTrace = {
 
 export const demoTickets: Ticket[] = [demoTicket];
 export const demoApprovals: Approval[] = [demoApproval];
-
