@@ -20,9 +20,10 @@ dist/
 npm-debug.log*
 pnpm-lock.yaml
 yarn.lock
+playwright-report/
+test-results/
 
 # Local data
 data/
 uploads/
 *.sqlite
-

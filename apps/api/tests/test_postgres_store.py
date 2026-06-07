@@ -4,6 +4,7 @@ import os
 import sys
 import unittest
 from pathlib import Path
+from urllib.parse import urlparse
 
 API_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(API_ROOT))
@@ -25,6 +26,43 @@ from app.store import PostgresStore
 
 
 DATABASE_URL = os.getenv("SUPPORT_COPILOT_TEST_DATABASE_URL")
+DEFAULT_SAFE_TEST_DATABASE_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
+def _allowed_test_database_hosts() -> set[str]:
+    configured = os.getenv("SUPPORT_COPILOT_TEST_DATABASE_ALLOW_HOSTS")
+    if not configured:
+        return DEFAULT_SAFE_TEST_DATABASE_HOSTS
+    return {host.strip().lower() for host in configured.split(",") if host.strip()}
+
+
+def validate_safe_test_database_url(database_url: str) -> None:
+    parsed = urlparse(database_url)
+    hostname = (parsed.hostname or "").lower()
+    database_name = parsed.path.lstrip("/")
+    allowed_hosts = _allowed_test_database_hosts()
+
+    if parsed.scheme not in {"postgres", "postgresql"} or not hostname or not database_name:
+        raise RuntimeError(
+            "SUPPORT_COPILOT_TEST_DATABASE_URL must be a full PostgreSQL URL for a disposable test database."
+        )
+    if hostname not in allowed_hosts:
+        hosts = ", ".join(sorted(allowed_hosts))
+        raise RuntimeError(
+            "Refusing to run destructive PostgreSQL integration tests against "
+            f"host {hostname!r}. These tests truncate tables before each case. "
+            f"Allowed hosts: {hosts}. Set SUPPORT_COPILOT_TEST_DATABASE_ALLOW_HOSTS "
+            "only when the target is a disposable test database."
+        )
+
+
+class PostgresTestDatabaseSafetyTest(unittest.TestCase):
+    def test_local_postgres_test_database_url_is_allowed(self) -> None:
+        validate_safe_test_database_url("postgresql://support:support@127.0.0.1:5432/support_copilot")
+
+    def test_remote_postgres_test_database_url_is_rejected_by_default(self) -> None:
+        with self.assertRaises(RuntimeError):
+            validate_safe_test_database_url("postgresql://support:support@prod-db.example.com/support_copilot")
 
 
 @unittest.skipUnless(
@@ -32,6 +70,10 @@ DATABASE_URL = os.getenv("SUPPORT_COPILOT_TEST_DATABASE_URL")
     "set SUPPORT_COPILOT_TEST_DATABASE_URL and install psycopg/pgvector to run PostgreSQL persistence tests",
 )
 class PostgresStorePersistenceTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        validate_safe_test_database_url(DATABASE_URL or "")
+
     def setUp(self) -> None:
         self.store = PostgresStore(database_url=DATABASE_URL or "", seed=False)
         self._reset_database()

@@ -10,7 +10,11 @@
     "dev:web": "npm --workspace apps/web run dev",
     "build:web": "npm --workspace apps/web run build",
     "lint:web": "npm --workspace apps/web run lint",
-    "test:api": "python3 -m unittest discover -s apps/api/tests"
+    "test:api": "python3 -m unittest discover -s apps/api/tests",
+    "test:e2e": "playwright test",
+    "test:e2e:headed": "playwright test --headed"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.60.0"
   }
 }
-

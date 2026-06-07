@@ -14,6 +14,18 @@ Enterprise knowledge base and ticket automation MVP with a multi-agent support w
 - Optional OpenAI-compatible chat API integration for customer reply draft generation,
   with deterministic template fallback when disabled or unavailable.
 
+## Current Completion Snapshot
+
+The project is past the empty-skeleton stage and is usable as a private MVP.
+The core support workflow, PostgreSQL/pgvector repository, tenant/RBAC guardrails,
+approval flow, trace view, read-only tool registry, optional LLM draft generation,
+frontend dashboard, unit tests, production build, and Playwright E2E path are all in place.
+
+The next milestone is to move from "demoable MVP" to "internal trial / enterprise PoC".
+The main gaps are production identity, frontend role-based workspaces, knowledge
+management screens, audit log screens, production-grade RAG/LLM evaluation,
+async agent execution, and deployment operations.
+
 ## Repository Layout
 
 ```text
@@ -27,7 +39,22 @@ docs          Future enhancement notes and planning docs
 
 ## Planning Docs
 
-- [Future Enhancements](docs/FUTURE_ENHANCEMENTS.md): roadmap notes for role-based workspaces, knowledge management, audit views, and production identity upgrades.
+- [Future Enhancements](docs/FUTURE_ENHANCEMENTS.md): staged roadmap for upgrading the MVP into an internal trial and enterprise PoC version.
+- [Environment Profiles](docs/ENVIRONMENTS.md): local, staging, production, and CI configuration baseline.
+
+## Next Stage Roadmap
+
+Recommended order for the next phase:
+
+1. Freeze the current MVP baseline and run API, web build, E2E, and PostgreSQL integration checks in CI.
+2. Remove production-facing demo fallback behavior from the frontend so API failures are visible.
+3. Replace `NEXT_PUBLIC_*` demo identity with a trusted identity source and role-aware frontend navigation.
+4. Add a `/knowledge` workspace for document management and embedding ingestion.
+5. Add audit log APIs and an `/audit` workspace for approvals, tool calls, knowledge writes, and run activity.
+6. Connect real read-only tools for logs, metadata databases, Jira, or GitHub while preserving whitelist and redaction rules.
+7. Improve RAG and LLM quality with configurable embeddings, hybrid search, structured verifier checks, and regression evals.
+8. Move agent runs to async worker execution with progressive trace updates and retry handling.
+9. Harden deployment with migrations, environment profiles, health checks, secret management, backups, and observability.
 
 ## Run The Backend
 
@@ -38,11 +65,11 @@ docker compose -f infra/docker-compose.yml up -d postgres
 ```
 
 ```bash
-cd apps/api
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8000
+pip install -r apps/api/requirements.txt
+cd apps/api
+../../.venv/bin/uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
 By default the API uses:
@@ -157,10 +184,27 @@ Open [http://localhost:3000](http://localhost:3000).
 
 ## Run Tests
 
-The backend core tests use only the Python standard library:
+After installing the API requirements, run the backend tests from the project root:
 
 ```bash
-python3 -m unittest discover -s apps/api/tests
+.venv/bin/python -m unittest discover -s apps/api/tests
+```
+
+Without `SUPPORT_COPILOT_TEST_DATABASE_URL`, the PostgreSQL integration tests are
+skipped. Configure that variable to include persistence and pgvector coverage.
+
+The browser E2E test starts an in-memory API server and a Next.js dev server on
+dedicated ports, then covers ticket creation, agent run startup, approval,
+language switching, and trace rendering:
+
+```bash
+npm run test:e2e
+```
+
+If Chromium is not installed for Playwright yet, run:
+
+```bash
+npx playwright install chromium
 ```
 
 PostgreSQL persistence tests are opt-in because they truncate their target
@@ -168,7 +212,7 @@ database:
 
 ```bash
 SUPPORT_COPILOT_TEST_DATABASE_URL=postgresql://support:support@127.0.0.1:5432/support_copilot \
-  python3 -m unittest apps/api/tests/test_postgres_store.py
+  .venv/bin/python -m unittest apps/api/tests/test_postgres_store.py
 ```
 
 ## Infrastructure
