@@ -21,7 +21,10 @@ class CreateDocumentRequest(BaseModel):
     content: str
 
 
+class IngestEmbeddingsRequest(BaseModel):
+    tenant_id: Optional[str] = None
+
+
 class ApprovalDecisionRequest(BaseModel):
     decided_by: str = Field(default="support.lead")
     note: Optional[str] = ""
-

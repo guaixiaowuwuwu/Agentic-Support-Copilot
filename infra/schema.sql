@@ -69,6 +69,9 @@ CREATE TABLE IF NOT EXISTS document_chunks (
   embedding vector(1536)
 );
 
+ALTER TABLE document_chunks
+  ADD COLUMN IF NOT EXISTS embedding vector(1536);
+
 CREATE INDEX IF NOT EXISTS idx_document_chunks_tenant ON document_chunks(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_document_chunks_embedding ON document_chunks USING ivfflat (embedding vector_cosine_ops);
 CREATE INDEX IF NOT EXISTS idx_agent_runs_ticket ON agent_runs(ticket_id);

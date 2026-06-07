@@ -4,7 +4,7 @@ import time
 from contextlib import contextmanager
 from typing import Dict, Iterable, List, Optional
 
-from .knowledge import KeywordRetriever
+from .knowledge import Retriever, create_default_retriever
 from .models import AgentRun, AgentStep, Approval, AuditLog, Evidence, Ticket, ToolCall
 from .store import Store
 from .time_utils import utc_now
@@ -29,11 +29,11 @@ class SupportAgentWorkflow:
     def __init__(
         self,
         store: Store,
-        retriever: Optional[KeywordRetriever] = None,
+        retriever: Optional[Retriever] = None,
         tools: Optional[ToolRegistry] = None,
     ) -> None:
         self.store = store
-        self.retriever = retriever or KeywordRetriever()
+        self.retriever = retriever or create_default_retriever(store)
         self.tools = tools or ToolRegistry()
 
     def start_run(self, ticket_id: str) -> AgentRun:
@@ -59,7 +59,8 @@ class SupportAgentWorkflow:
         )
 
         with measure_step() as metric:
-            evidence = self.retriever.search(ticket.tenant_id, f"{ticket.subject} {ticket.description}", self.store.list_chunks())
+            chunks = None if self.retriever.uses_store_backend else self.store.list_chunks()
+            evidence = self.retriever.search(ticket.tenant_id, f"{ticket.subject} {ticket.description}", chunks)
         run.evidence = evidence
         self.store.update_run(run)
         self._record_step(

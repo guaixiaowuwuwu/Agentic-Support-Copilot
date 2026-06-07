@@ -8,6 +8,7 @@ Enterprise knowledge base and ticket automation MVP with a multi-agent support w
   `triage -> retrieval -> tool_call_optional -> verifier -> approval -> reply`.
 - Next.js dashboard with ticket list, ticket detail, approval queue, and run trace views.
 - PostgreSQL/pgvector-backed repository for tickets, runs, steps, approvals, documents, chunks, tool calls, and audit logs.
+- 1536-dimensional deterministic local embeddings for private MVP ingestion, with pgvector cosine retrieval and tenant-scoped evidence queries.
 - Optional in-memory store for fast local tests and demos.
 - Unit tests covering triage/RAG/verifier, tenant isolation, and tool permissions.
 
@@ -50,6 +51,14 @@ Health check:
 
 ```bash
 curl http://localhost:8000/api/health
+```
+
+Backfill missing chunk embeddings after importing or migrating documents:
+
+```bash
+curl -X POST http://localhost:8000/api/knowledge/embeddings/ingest \
+  -H 'Content-Type: application/json' \
+  -d '{"tenant_id":"acme"}'
 ```
 
 ## Run The Frontend

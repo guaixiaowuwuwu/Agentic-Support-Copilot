@@ -13,7 +13,13 @@ try:
 except ImportError:  # pragma: no cover - optional integration dependency.
     psycopg = None  # type: ignore[assignment]
 
+try:
+    import pgvector
+except ImportError:  # pragma: no cover - optional integration dependency.
+    pgvector = None  # type: ignore[assignment]
+
 from app.agents import SupportAgentWorkflow
+from app.knowledge import EMBEDDING_DIMENSIONS, PgVectorRetriever
 from app.models import Document, Ticket
 from app.store import PostgresStore
 
@@ -22,8 +28,8 @@ DATABASE_URL = os.getenv("SUPPORT_COPILOT_TEST_DATABASE_URL")
 
 
 @unittest.skipUnless(
-    DATABASE_URL and psycopg is not None,
-    "set SUPPORT_COPILOT_TEST_DATABASE_URL to run PostgreSQL persistence tests",
+    DATABASE_URL and psycopg is not None and pgvector is not None,
+    "set SUPPORT_COPILOT_TEST_DATABASE_URL and install psycopg/pgvector to run PostgreSQL persistence tests",
 )
 class PostgresStorePersistenceTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -101,6 +107,56 @@ class PostgresStorePersistenceTest(unittest.TestCase):
         self.assertEqual(completed.status, "completed")
         self.assertEqual(finished_ticket.status, "replied")
         self.assertEqual(len(reloaded.list_audit_logs("acme")), 2)
+
+    def test_document_ingestion_writes_vectors_and_pgvector_search_is_tenant_scoped(self) -> None:
+        self.store.add_document(
+            Document(
+                tenant_id="acme",
+                title="Acme API 401 Runbook",
+                source_type="api_doc",
+                uri="kb://acme/api-401",
+                content="API 401 errors require checking Bearer token syntax, expiry, and OAuth scopes.",
+            )
+        )
+        self.store.add_document(
+            Document(
+                tenant_id="globex",
+                title="Globex Secret API 401 Runbook",
+                source_type="api_doc",
+                uri="kb://globex/secret-401",
+                content="Globex private 401 remediation procedure. This must stay tenant-scoped.",
+            )
+        )
+
+        acme_chunks = [chunk for chunk in self.store.list_chunks() if chunk.tenant_id == "acme"]
+        self.assertTrue(acme_chunks)
+        self.assertTrue(all(chunk.embedding for chunk in acme_chunks))
+        self.assertTrue(all(len(chunk.embedding or []) == EMBEDDING_DIMENSIONS for chunk in acme_chunks))
+
+        evidence = PgVectorRetriever(self.store).search("acme", "Globex Secret API 401 Runbook")
+
+        self.assertTrue(evidence)
+        self.assertTrue(all("globex" not in item.uri for item in evidence))
+
+    def test_missing_embeddings_can_be_backfilled(self) -> None:
+        self.store.add_document(
+            Document(
+                tenant_id="acme",
+                title="Token Rotation Guide",
+                source_type="api_doc",
+                uri="kb://acme/token-rotation",
+                content="Rotate expired Bearer tokens and validate scopes before retrying API requests.",
+            )
+        )
+
+        assert psycopg is not None
+        with psycopg.connect(DATABASE_URL) as conn:
+            conn.execute("UPDATE document_chunks SET embedding = NULL WHERE tenant_id = %s", ("acme",))
+
+        updated = self.store.ingest_missing_embeddings(tenant_id="acme")
+
+        self.assertGreater(updated, 0)
+        self.assertTrue(all(chunk.embedding for chunk in self.store.list_chunks() if chunk.tenant_id == "acme"))
 
 
 if __name__ == "__main__":

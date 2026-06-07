@@ -3,10 +3,16 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from threading import RLock
-from typing import Any, Dict, List, Optional, Protocol
+from typing import Any, Dict, List, Optional, Protocol, Sequence
 from uuid import UUID
 
-from .knowledge import chunk_document
+from .knowledge import (
+    DEFAULT_EMBEDDING_MODEL,
+    EmbeddingModel,
+    chunk_document,
+    embed_chunk,
+    embedding_text_for_chunk,
+)
 from .models import (
     AgentRun,
     AgentStep,
@@ -14,6 +20,7 @@ from .models import (
     AuditLog,
     Document,
     DocumentChunk,
+    Evidence,
     Ticket,
     ToolCall,
 )
@@ -27,6 +34,13 @@ except ImportError:  # pragma: no cover - exercised only when optional deps are 
     psycopg = None  # type: ignore[assignment]
     dict_row = None  # type: ignore[assignment]
     Jsonb = None  # type: ignore[assignment]
+
+try:
+    from pgvector import Vector
+    from pgvector.psycopg import register_vector
+except ImportError:  # pragma: no cover - exercised only when optional deps are missing.
+    Vector = None  # type: ignore[assignment]
+    register_vector = None  # type: ignore[assignment]
 
 
 class NotFoundError(KeyError):
@@ -64,6 +78,9 @@ class Store(Protocol):
     def list_chunks(self) -> List[DocumentChunk]:
         ...
 
+    def ingest_missing_embeddings(self, tenant_id: Optional[str] = None) -> int:
+        ...
+
     def create_run(self, run: AgentRun) -> AgentRun:
         ...
 
@@ -99,8 +116,13 @@ class Store(Protocol):
 
 
 class InMemoryStore:
-    def __init__(self, seed: bool = True) -> None:
+    def __init__(
+        self,
+        seed: bool = True,
+        embedding_model: EmbeddingModel = DEFAULT_EMBEDDING_MODEL,
+    ) -> None:
         self._lock = RLock()
+        self.embedding_model = embedding_model
         self.tickets: Dict[str, Ticket] = {}
         self.documents: Dict[str, Document] = {}
         self.chunks: Dict[str, DocumentChunk] = {}
@@ -206,6 +228,7 @@ class InMemoryStore:
         with self._lock:
             self.documents[document.id] = document
             for chunk in chunk_document(document):
+                embed_chunk(chunk, self.embedding_model)
                 self.chunks[chunk.id] = chunk
         return document
 
@@ -217,6 +240,18 @@ class InMemoryStore:
 
     def list_chunks(self) -> List[DocumentChunk]:
         return list(self.chunks.values())
+
+    def ingest_missing_embeddings(self, tenant_id: Optional[str] = None) -> int:
+        updated = 0
+        with self._lock:
+            for chunk in self.chunks.values():
+                if tenant_id and chunk.tenant_id != tenant_id:
+                    continue
+                if chunk.embedding:
+                    continue
+                embed_chunk(chunk, self.embedding_model)
+                updated += 1
+        return updated
 
     def create_run(self, run: AgentRun) -> AgentRun:
         with self._lock:
@@ -324,6 +359,20 @@ def _str_id_list(values: Optional[List[Any]]) -> List[str]:
     return [str(value) for value in values or []]
 
 
+def _float_list(value: Any) -> Optional[List[float]]:
+    if value is None:
+        return None
+    if hasattr(value, "tolist"):
+        value = value.tolist()
+    return [float(item) for item in value]
+
+
+def _pg_vector(value: Sequence[float]) -> Any:
+    if Vector is None:
+        return list(value)
+    return Vector(value)
+
+
 class PostgresStore:
     def __init__(
         self,
@@ -331,25 +380,34 @@ class PostgresStore:
         seed: bool = True,
         schema_path: Path = DEFAULT_SCHEMA_PATH,
         ensure_schema: bool = True,
+        embedding_model: EmbeddingModel = DEFAULT_EMBEDDING_MODEL,
     ) -> None:
         if psycopg is None or dict_row is None:
             raise RuntimeError("psycopg is required for PostgreSQL storage")
+        if register_vector is None or Vector is None:
+            raise RuntimeError("pgvector is required for PostgreSQL vector storage")
 
         self.database_url = database_url
         self.schema_path = schema_path
         self._lock = RLock()
+        self.embedding_model = embedding_model
 
         if ensure_schema:
             self.ensure_schema()
         if seed:
             self.seed()
+        if ensure_schema:
+            self.ingest_missing_embeddings()
 
-    def _connect(self) -> Any:
-        return psycopg.connect(self.database_url, row_factory=dict_row)
+    def _connect(self, register_vectors: bool = True) -> Any:
+        conn = psycopg.connect(self.database_url, row_factory=dict_row)
+        if register_vectors:
+            register_vector(conn)
+        return conn
 
     def ensure_schema(self) -> None:
         schema_sql = self.schema_path.read_text(encoding="utf-8")
-        with self._lock, self._connect() as conn:
+        with self._lock, self._connect(register_vectors=False) as conn:
             conn.execute(schema_sql)
 
     def seed(self) -> None:
@@ -526,6 +584,9 @@ class PostgresStore:
 
     def add_document(self, document: Document) -> Document:
         chunks = chunk_document(document)
+        for chunk in chunks:
+            embed_chunk(chunk, self.embedding_model)
+
         with self._lock, self._connect() as conn:
             row = conn.execute(
                 """
@@ -547,9 +608,10 @@ class PostgresStore:
                 conn.execute(
                     """
                     INSERT INTO document_chunks (
-                        id, document_id, tenant_id, title, source_type, uri, content, chunk_index
+                        id, document_id, tenant_id, title, source_type, uri, content, chunk_index,
+                        embedding
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         _uuid(chunk.id),
@@ -560,6 +622,7 @@ class PostgresStore:
                         chunk.uri,
                         chunk.content,
                         chunk.chunk_index,
+                        _pg_vector(chunk.embedding or []),
                     ),
                 )
             return self._document_from_row(row)
@@ -579,6 +642,78 @@ class PostgresStore:
         with self._connect() as conn:
             rows = conn.execute("SELECT * FROM document_chunks ORDER BY document_id, chunk_index").fetchall()
             return [self._chunk_from_row(row) for row in rows]
+
+    def ingest_missing_embeddings(self, tenant_id: Optional[str] = None) -> int:
+        where_clause = "WHERE embedding IS NULL"
+        params: tuple[Any, ...] = ()
+        if tenant_id:
+            where_clause += " AND tenant_id = %s"
+            params = (tenant_id,)
+
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM document_chunks
+                {where_clause}
+                ORDER BY document_id, chunk_index
+                """,
+                params,
+            ).fetchall()
+
+            for row in rows:
+                chunk = self._chunk_from_row(row)
+                embedding = self.embedding_model.embed(embedding_text_for_chunk(chunk))
+                conn.execute(
+                    "UPDATE document_chunks SET embedding = %s WHERE id = %s",
+                    (_pg_vector(embedding), row["id"]),
+                )
+
+        return len(rows)
+
+    def search_chunks_by_embedding(
+        self,
+        tenant_id: str,
+        embedding: Sequence[float],
+        limit: int = 4,
+    ) -> List[Evidence]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    id,
+                    document_id,
+                    tenant_id,
+                    title,
+                    source_type,
+                    uri,
+                    content,
+                    chunk_index,
+                    embedding,
+                    1 - (embedding <=> %s) AS score
+                FROM document_chunks
+                WHERE tenant_id = %s
+                  AND embedding IS NOT NULL
+                ORDER BY embedding <=> %s
+                LIMIT %s
+                """,
+                (_pg_vector(embedding), tenant_id, _pg_vector(embedding), limit),
+            ).fetchall()
+
+        evidence: List[Evidence] = []
+        for row in rows:
+            excerpt = " ".join(row["content"].split())[:320]
+            evidence.append(
+                Evidence(
+                    chunk_id=_str_id(row["id"]),
+                    document_id=_str_id(row["document_id"]),
+                    title=row["title"],
+                    uri=row["uri"],
+                    excerpt=excerpt,
+                    score=round(float(row["score"] or 0), 3),
+                )
+            )
+        return evidence
 
     def create_run(self, run: AgentRun) -> AgentRun:
         with self._lock, self._connect() as conn:
@@ -881,6 +1016,7 @@ class PostgresStore:
             uri=row["uri"],
             content=row["content"],
             chunk_index=row["chunk_index"],
+            embedding=_float_list(row.get("embedding")),
         )
 
     def _run_from_row(self, conn: Any, row: Dict[str, Any]) -> AgentRun:

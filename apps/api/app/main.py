@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .agents import SupportAgentWorkflow
 from .graph import WORKFLOW_NODES, graph_engine_name
 from .models import Document, Ticket, to_dict
-from .schemas import ApprovalDecisionRequest, CreateDocumentRequest, CreateTicketRequest
+from .schemas import ApprovalDecisionRequest, CreateDocumentRequest, CreateTicketRequest, IngestEmbeddingsRequest
 from .store import NotFoundError, create_store
 
 store = create_store(seed=True)
@@ -130,6 +130,12 @@ def create_document(payload: CreateDocumentRequest) -> dict:
         )
     )
     return to_dict(document)
+
+
+@app.post("/api/knowledge/embeddings/ingest")
+def ingest_embeddings(payload: IngestEmbeddingsRequest) -> dict:
+    updated = store.ingest_missing_embeddings(tenant_id=payload.tenant_id)
+    return {"updated_chunks": updated, "tenant_id": payload.tenant_id}
 
 
 @app.get("/api/knowledge/documents")

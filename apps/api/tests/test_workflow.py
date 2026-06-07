@@ -8,8 +8,8 @@ API_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(API_ROOT))
 
 from app.agents import SupportAgentWorkflow
-from app.knowledge import KeywordRetriever
-from app.models import Document, Ticket
+from app.knowledge import EMBEDDING_DIMENSIONS, KeywordRetriever, VectorRetriever
+from app.models import Document, Evidence, Ticket
 from app.store import InMemoryStore
 from app.tools import ToolPermissionError, ToolRegistry
 
@@ -95,6 +95,61 @@ class SupportWorkflowTest(unittest.TestCase):
 
         self.assertTrue(all("globex" not in item.uri for item in evidence))
 
+    def test_vector_ingestion_and_retrieval_are_tenant_scoped(self) -> None:
+        store = InMemoryStore(seed=False)
+        store.add_document(
+            Document(
+                tenant_id="acme",
+                title="Acme API 401 Runbook",
+                source_type="api_doc",
+                uri="kb://acme/api-401",
+                content="API 401 errors require checking Bearer token syntax, expiry, and OAuth scopes.",
+            )
+        )
+        store.add_document(
+            Document(
+                tenant_id="globex",
+                title="Globex Secret API 401 Runbook",
+                source_type="api_doc",
+                uri="kb://globex/secret-401",
+                content="Globex private 401 remediation procedure. This must stay tenant-scoped.",
+            )
+        )
+
+        chunks = store.list_chunks()
+        self.assertTrue(chunks)
+        self.assertTrue(all(chunk.embedding for chunk in chunks))
+        self.assertTrue(all(len(chunk.embedding or []) == EMBEDDING_DIMENSIONS for chunk in chunks))
+
+        evidence = VectorRetriever().search(
+            "acme",
+            "Globex Secret API 401 Runbook",
+            chunks,
+        )
+
+        self.assertTrue(evidence)
+        self.assertTrue(all("globex" not in item.uri for item in evidence))
+
+    def test_verifier_still_blocks_unauthorized_write_risk(self) -> None:
+        workflow = SupportAgentWorkflow(InMemoryStore(seed=False))
+        report = workflow._verify(
+            "引用来源：\n[1] Runbook - kb://safe\n请修改客户数据。请不要发送原始密钥。",
+            [
+                Evidence(
+                    chunk_id="chunk-1",
+                    document_id="doc-1",
+                    title="Runbook",
+                    uri="kb://safe",
+                    excerpt="Safe policy.",
+                    score=0.9,
+                )
+            ],
+            {"risk_level": "high"},
+        )
+
+        self.assertFalse(report["passed"])
+        self.assertIn("unauthorized_write_risk", report["findings"])
+
     def test_tool_whitelist_denies_unapproved_tools(self) -> None:
         registry = ToolRegistry(allowed_tools=["log_search"])
         store = InMemoryStore(seed=True)
@@ -122,4 +177,3 @@ class SupportWorkflowTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

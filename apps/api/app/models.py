@@ -48,6 +48,7 @@ class DocumentChunk:
     uri: str
     content: str
     chunk_index: int
+    embedding: Optional[List[float]] = None
     id: str = field(default_factory=new_id)
 
 
@@ -142,4 +143,3 @@ def to_dict(value: Any) -> Any:
     if isinstance(value, dict):
         return {key: to_dict(item) for key, item in value.items()}
     return value
-
