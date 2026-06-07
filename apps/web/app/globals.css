@@ -192,6 +192,17 @@ textarea {
   gap: 10px;
 }
 
+.action-stack,
+.decision-stack {
+  display: grid;
+  gap: 7px;
+  justify-items: end;
+}
+
+.decision-stack {
+  justify-items: stretch;
+}
+
 .metrics-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -359,6 +370,90 @@ textarea:focus {
 .form-error {
   color: var(--red);
   font-size: 13px;
+}
+
+.state-panel {
+  display: flex;
+  gap: 14px;
+  margin-bottom: 18px;
+  padding: 18px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+}
+
+.state-panel-compact {
+  margin: 0;
+  padding: 16px;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.state-icon {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  color: var(--muted);
+}
+
+.state-error .state-icon {
+  color: var(--red);
+}
+
+.state-permission .state-icon {
+  color: var(--amber);
+}
+
+.state-loading .state-icon {
+  color: var(--accent);
+  animation: spin 1s linear infinite;
+}
+
+.state-copy {
+  min-width: 0;
+}
+
+.state-copy h2 {
+  margin: 0;
+  font-size: 16px;
+  letter-spacing: 0;
+}
+
+.state-copy p {
+  margin: 6px 0 0;
+  color: #48515a;
+  line-height: 1.5;
+}
+
+.state-detail {
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  margin-top: 10px;
+  padding: 8px 10px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  background: #f8fafb;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: #303840;
+  font-family:
+    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+}
+
+.state-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .table-wrap {

@@ -1,4 +1,4 @@
-import { Bot, ClipboardList, GitBranch, ShieldCheck, UserRound } from "lucide-react";
+import { Bot, ClipboardList, ShieldCheck, UserRound } from "lucide-react";
 import Link from "next/link";
 
 import { LanguageToggle } from "@/components/language-toggle";
@@ -21,10 +21,6 @@ export function TopNav({ dict, locale }: { dict: Dictionary; locale: Locale }) {
           <Link href="/approvals">
             <ShieldCheck size={16} />
             {dict.nav.approvals}
-          </Link>
-          <Link href="/runs/demo-run-api-401/trace">
-            <GitBranch size={16} />
-            {dict.nav.trace}
           </Link>
         </nav>
         <div className="user-chip" title={`${userContext.email} · ${userContext.roles.join(", ")}`}>

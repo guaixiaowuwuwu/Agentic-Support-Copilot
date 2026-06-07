@@ -2,6 +2,7 @@ import type { RunTrace, Ticket } from "@support-copilot/shared";
 import { GitBranch, ShieldCheck } from "lucide-react";
 import Link from "next/link";
 
+import { ApiErrorState, StatePanel } from "@/components/page-state";
 import { ApprovalButtons, StartRunButton } from "@/components/run-actions";
 import { StatusBadge } from "@/components/status-badge";
 import { apiGet, demoTicket, demoTrace } from "@/lib/api";
@@ -10,14 +11,42 @@ import { getI18n } from "@/lib/i18n-server";
 
 export const dynamic = "force-dynamic";
 
+type TraceResult = { ok: true; trace: RunTrace } | { ok: false; error: unknown } | null;
+
 export default async function TicketPage({ params }: { params: Promise<{ ticketId: string }> }) {
   const { locale, dict } = await getI18n();
   const { ticketId } = await params;
-  const ticket = await apiGet<Ticket>(`/api/tickets/${ticketId}`, demoTicket);
+  let ticket: Ticket;
+
+  try {
+    ticket = await apiGet<Ticket>(`/api/tickets/${ticketId}`, demoTicket);
+  } catch (error) {
+    return (
+      <main className="page">
+        <section className="page-title">
+          <div>
+            <p className="eyebrow">{dict.ticketDetail.ticket}</p>
+            <h1>{compactId(ticketId)}</h1>
+          </div>
+        </section>
+        <ApiErrorState error={error} dict={dict} body={dict.state.ticketErrorBody} />
+      </main>
+    );
+  }
+
   const latestRunId = ticket.run_ids.at(-1);
-  const trace = latestRunId
-    ? await apiGet<RunTrace>(`/api/runs/${latestRunId}/trace`, demoTrace)
-    : null;
+  let traceResult: TraceResult = null;
+
+  if (latestRunId) {
+    try {
+      traceResult = { ok: true, trace: await apiGet<RunTrace>(`/api/runs/${latestRunId}/trace`, demoTrace) };
+    } catch (error) {
+      traceResult = { ok: false, error };
+    }
+  }
+
+  const trace = traceResult?.ok ? traceResult.trace : null;
+  const traceError = traceResult && !traceResult.ok ? traceResult.error : null;
 
   return (
     <main className="page">
@@ -65,7 +94,9 @@ export default async function TicketPage({ params }: { params: Promise<{ ticketI
             <h2>{dict.ticketDetail.currentRun}</h2>
             {trace ? <StatusBadge value={trace.run.status} locale={locale} /> : <StatusBadge value="open" locale={locale} />}
           </div>
-          {trace ? (
+          {traceError ? (
+            <ApiErrorState error={traceError} dict={dict} body={dict.state.runErrorBody} compact />
+          ) : trace ? (
             <>
               <dl className="kv">
                 <div>
@@ -95,7 +126,7 @@ export default async function TicketPage({ params }: { params: Promise<{ ticketI
               </div>
             </>
           ) : (
-            <p className="empty-state">{dict.ticketDetail.noRun}</p>
+            <StatePanel tone="empty" title={dict.ticketDetail.noRun} body={dict.state.noRunBody} compact />
           )}
         </div>
       </section>

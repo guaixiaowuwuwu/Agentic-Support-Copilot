@@ -2,6 +2,7 @@ import type { Approval, Ticket } from "@support-copilot/shared";
 import { Clock3, Gauge, ShieldCheck, TicketCheck } from "lucide-react";
 import Link from "next/link";
 
+import { ApiErrorState, StatePanel } from "@/components/page-state";
 import { StatusBadge } from "@/components/status-badge";
 import { TicketCreator } from "@/components/ticket-creator";
 import { apiGet, demoApprovals, demoTickets } from "@/lib/api";
@@ -10,10 +11,39 @@ import { getI18n } from "@/lib/i18n-server";
 
 export const dynamic = "force-dynamic";
 
+type LoadResult<T> = { ok: true; data: T } | { ok: false; error: unknown };
+
+async function loadResult<T>(promise: Promise<T>): Promise<LoadResult<T>> {
+  try {
+    return { ok: true, data: await promise };
+  } catch (error) {
+    return { ok: false, error };
+  }
+}
+
 export default async function DashboardPage() {
   const { locale, dict } = await getI18n();
-  const tickets = await apiGet<Ticket[]>("/api/tickets", demoTickets);
-  const approvals = await apiGet<Approval[]>("/api/approvals?status=pending", demoApprovals);
+  const [ticketsResult, approvalsResult] = await Promise.all([
+    loadResult(apiGet<Ticket[]>("/api/tickets", demoTickets)),
+    loadResult(apiGet<Approval[]>("/api/approvals?status=pending", demoApprovals))
+  ]);
+
+  if (!ticketsResult.ok) {
+    return (
+      <main className="page">
+        <section className="page-title">
+          <div>
+            <p className="eyebrow">{dict.dashboard.eyebrow}</p>
+            <h1>{dict.dashboard.title}</h1>
+          </div>
+        </section>
+        <ApiErrorState error={ticketsResult.error} dict={dict} body={dict.state.dashboardErrorBody} />
+      </main>
+    );
+  }
+
+  const tickets = ticketsResult.data;
+  const approvals = approvalsResult.ok ? approvalsResult.data : [];
   const awaiting = tickets.filter((ticket) => ticket.status === "awaiting_approval").length;
   const replied = tickets.filter((ticket) => ticket.status === "replied").length;
 
@@ -46,7 +76,7 @@ export default async function DashboardPage() {
         <div className="metric">
           <ShieldCheck size={20} />
           <span>{dict.dashboard.pendingApprovals}</span>
-          <strong>{approvals.length}</strong>
+          <strong>{approvalsResult.ok ? approvals.length : "-"}</strong>
         </div>
         <div className="metric">
           <Gauge size={20} />
@@ -54,6 +84,14 @@ export default async function DashboardPage() {
           <strong>{replied}</strong>
         </div>
       </section>
+
+      {!approvalsResult.ok ? (
+        <ApiErrorState
+          error={approvalsResult.error}
+          dict={dict}
+          body={dict.state.dashboardApprovalsErrorBody}
+        />
+      ) : null}
 
       <section className="work-grid">
         <div className="surface">
@@ -67,35 +105,44 @@ export default async function DashboardPage() {
           <div className="surface-header">
             <h2>{dict.dashboard.queue}</h2>
           </div>
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>{dict.dashboard.tableSubject}</th>
-                  <th>{dict.dashboard.tableStatus}</th>
-                  <th>{dict.dashboard.tablePriority}</th>
-                  <th>{dict.dashboard.tableUpdated}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {tickets.map((ticket) => (
-                  <tr key={ticket.id}>
-                    <td>
-                      <Link href={`/tickets/${ticket.id}`} className="table-link">
-                        {ticket.subject}
-                      </Link>
-                      <span className="muted-line">{ticket.customer_name}</span>
-                    </td>
-                    <td>
-                      <StatusBadge value={ticket.status} locale={locale} />
-                    </td>
-                    <td>{ticket.priority ?? "-"}</td>
-                    <td>{formatDate(ticket.updated_at, locale)}</td>
+          {tickets.length ? (
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>{dict.dashboard.tableSubject}</th>
+                    <th>{dict.dashboard.tableStatus}</th>
+                    <th>{dict.dashboard.tablePriority}</th>
+                    <th>{dict.dashboard.tableUpdated}</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {tickets.map((ticket) => (
+                    <tr key={ticket.id}>
+                      <td>
+                        <Link href={`/tickets/${ticket.id}`} className="table-link">
+                          {ticket.subject}
+                        </Link>
+                        <span className="muted-line">{ticket.customer_name}</span>
+                      </td>
+                      <td>
+                        <StatusBadge value={ticket.status} locale={locale} />
+                      </td>
+                      <td>{ticket.priority ?? "-"}</td>
+                      <td>{formatDate(ticket.updated_at, locale)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <StatePanel
+              tone="empty"
+              title={dict.state.ticketsEmptyTitle}
+              body={dict.state.ticketsEmptyBody}
+              compact
+            />
+          )}
         </div>
       </section>
     </main>

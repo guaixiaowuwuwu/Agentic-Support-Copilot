@@ -1,6 +1,48 @@
 import type { AgentRun, Approval, RunTrace, Ticket, UserContext } from "@support-copilot/shared";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
+const APP_ENV =
+  (
+    process.env.NEXT_PUBLIC_SUPPORT_COPILOT_ENV ??
+    process.env.NEXT_PUBLIC_VERCEL_ENV ??
+    process.env.NODE_ENV ??
+    "development"
+  ).toLowerCase();
+const PRODUCTION_LIKE_ENVS = new Set(["production", "staging", "preview"]);
+const DEMO_MODE_ENABLED =
+  process.env.NEXT_PUBLIC_SUPPORT_COPILOT_DEMO_MODE === "true" && !PRODUCTION_LIKE_ENVS.has(APP_ENV);
+
+type ApiErrorOptions = {
+  status?: number;
+  detail?: string;
+  path?: string;
+  cause?: unknown;
+};
+
+export class ApiError extends Error {
+  status?: number;
+  detail?: string;
+  path?: string;
+
+  constructor(message: string, options: ApiErrorOptions = {}) {
+    super(message);
+    this.name = "ApiError";
+    this.status = options.status;
+    this.detail = options.detail;
+    this.path = options.path;
+    this.cause = options.cause;
+  }
+
+  get isPermissionError(): boolean {
+    return this.status === 401 || this.status === 403;
+  }
+}
+
+export const apiConfig = {
+  baseUrl: API_BASE,
+  appEnv: APP_ENV,
+  demoMode: DEMO_MODE_ENABLED
+};
 
 function splitCsv(value: string | undefined, fallback: string[]): string[] {
   const items = value
@@ -28,18 +70,62 @@ function authHeaders(): Record<string, string> {
   };
 }
 
-export async function apiGet<T>(path: string, fallback: T): Promise<T> {
+async function readResponseDetail(response: Response): Promise<string> {
+  const text = await response.text();
+  if (!text) {
+    return "";
+  }
+  try {
+    const parsed = JSON.parse(text) as { detail?: unknown; message?: unknown };
+    const detail = parsed.detail ?? parsed.message;
+    return typeof detail === "string" ? detail : text;
+  } catch {
+    return text;
+  }
+}
+
+async function apiErrorFromResponse(response: Response, path: string): Promise<ApiError> {
+  const detail = await readResponseDetail(response);
+  return new ApiError(detail || `Request failed with status ${response.status}`, {
+    status: response.status,
+    detail,
+    path
+  });
+}
+
+function normalizeApiError(error: unknown, path: string): ApiError {
+  if (error instanceof ApiError) {
+    return error;
+  }
+  if (error instanceof Error) {
+    return new ApiError(error.message || "Unable to reach the API", { path, cause: error });
+  }
+  return new ApiError("Unable to reach the API", { path, cause: error });
+}
+
+export function isApiError(error: unknown): error is ApiError {
+  return error instanceof ApiError;
+}
+
+export function isPermissionError(error: unknown): boolean {
+  return isApiError(error) && error.isPermissionError;
+}
+
+export async function apiGet<T>(path: string, demoFallback?: T): Promise<T> {
   try {
     const response = await fetch(`${API_BASE}${path}`, {
       cache: "no-store",
       headers: authHeaders()
     });
     if (!response.ok) {
-      return fallback;
+      throw await apiErrorFromResponse(response, path);
     }
     return (await response.json()) as T;
-  } catch {
-    return fallback;
+  } catch (error) {
+    if (DEMO_MODE_ENABLED && demoFallback !== undefined) {
+      return demoFallback;
+    }
+    throw normalizeApiError(error, path);
   }
 }
 
@@ -50,8 +136,7 @@ export async function apiPost<T>(path: string, body: unknown = {}): Promise<T> {
     body: JSON.stringify(body)
   });
   if (!response.ok) {
-    const detail = await response.text();
-    throw new Error(detail || `Request failed: ${response.status}`);
+    throw await apiErrorFromResponse(response, path);
   }
   return (await response.json()) as T;
 }

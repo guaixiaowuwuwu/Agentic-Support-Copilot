@@ -2,6 +2,30 @@
 
 > 本日志按每次更新的能力内容分组，不按日期分组。
 
+## 移除生产可见 demo fallback
+
+### 新增
+- 新增前端统一状态面板，覆盖加载、空状态、错误状态和权限不足状态。
+- 新增页面重试按钮，用于 API 失败后手动刷新 Dashboard、工单详情、审批队列和运行追踪。
+- 新增 App Router 加载态，覆盖 Dashboard、审批队列、工单详情和运行追踪页面。
+- 新增客户端操作错误提示，启动 run、批准和驳回失败时在按钮区域显示真实错误。
+
+### 变更
+- 前端 API client 现在区分 demo 模式和真实环境模式，只有显式开启 demo 模式且不处于 `production`、`staging` 或 `preview` 时才会使用 demo fallback。
+- staging / production / preview 中禁用静默 demo fallback，API 网络异常、非 2xx 响应和权限错误会以明确错误状态展示。
+- Dashboard、Ticket Detail、Approvals 和 Run Trace 不再在 API 失败时展示 `demoTicket`、`demoApproval` 或 `demoTrace`。
+- 顶栏移除固定 `/runs/demo-run-api-401/trace` 入口，真实环境不再暴露固定 demo run 链接。
+- Dashboard 在工单接口可用但审批接口失败时保留可读队列，并明确显示审批数量加载失败。
+- 工单详情在工单可读但最近 run trace 读取失败时显示局部错误，不再伪装成正常 run。
+- 运行追踪页对空步骤、空工具调用和空证据增加明确空状态。
+- 中英文词典同步补齐错误、权限、空状态、加载和操作失败文案。
+
+### 验证
+- 前端 production build 通过：`npm --workspace apps/web run build`。
+- 浏览器 E2E 通过：`npm run test:e2e`。
+- 已验证后端断开时 Dashboard、Approvals 和 Run Trace 显示错误状态与重试入口，不展示 demo 数据。
+- 已验证仅 `support_agent` 访问审批队列时显示权限不足状态和后端 403 detail。
+
 ## 接入真实只读工具
 
 ### 新增
