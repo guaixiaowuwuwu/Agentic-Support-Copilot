@@ -7,8 +7,8 @@ Enterprise knowledge base and ticket automation MVP with a multi-agent support w
 - FastAPI backend with a deterministic agent workflow:
   `triage -> retrieval -> tool_call_optional -> verifier -> approval -> reply`.
 - Next.js dashboard with ticket list, ticket detail, approval queue, and run trace views.
-- In-memory development store for fast local demos.
-- PostgreSQL/pgvector, Redis, and object storage infrastructure stubs for private deployment.
+- PostgreSQL/pgvector-backed repository for tickets, runs, steps, approvals, documents, chunks, tool calls, and audit logs.
+- Optional in-memory store for fast local tests and demos.
 - Unit tests covering triage/RAG/verifier, tenant isolation, and tool permissions.
 
 ## Repository Layout
@@ -23,6 +23,12 @@ scripts       Local developer helpers
 
 ## Run The Backend
 
+Start PostgreSQL first:
+
+```bash
+docker compose -f infra/docker-compose.yml up -d postgres
+```
+
 ```bash
 cd apps/api
 python3 -m venv .venv
@@ -30,6 +36,15 @@ source .venv/bin/activate
 pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8000
 ```
+
+By default the API uses:
+
+```text
+postgresql://support:support@127.0.0.1:5432/support_copilot
+```
+
+Override it with `SUPPORT_COPILOT_DATABASE_URL` or `DATABASE_URL`. For a quick
+non-persistent demo, run the API with `SUPPORT_COPILOT_STORE=memory`.
 
 Health check:
 
@@ -54,6 +69,14 @@ The backend core tests use only the Python standard library:
 python3 -m unittest discover -s apps/api/tests
 ```
 
+PostgreSQL persistence tests are opt-in because they truncate their target
+database:
+
+```bash
+SUPPORT_COPILOT_TEST_DATABASE_URL=postgresql://support:support@127.0.0.1:5432/support_copilot \
+  python3 -m unittest apps/api/tests/test_postgres_store.py
+```
+
 ## Infrastructure
 
 Start local private-deployment dependencies:
@@ -61,7 +84,3 @@ Start local private-deployment dependencies:
 ```bash
 docker compose -f infra/docker-compose.yml up -d
 ```
-
-The current API uses an in-memory store for MVP development. The SQL schema in
-`infra/schema.sql` defines the target PostgreSQL/pgvector data model.
-

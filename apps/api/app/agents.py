@@ -6,7 +6,7 @@ from typing import Dict, Iterable, List, Optional
 
 from .knowledge import KeywordRetriever
 from .models import AgentRun, AgentStep, Approval, AuditLog, Evidence, Ticket, ToolCall
-from .store import InMemoryStore
+from .store import Store
 from .time_utils import utc_now
 from .tools import ToolPermissionError, ToolRegistry
 
@@ -28,7 +28,7 @@ def estimate_tokens(*parts: str) -> int:
 class SupportAgentWorkflow:
     def __init__(
         self,
-        store: InMemoryStore,
+        store: Store,
         retriever: Optional[KeywordRetriever] = None,
         tools: Optional[ToolRegistry] = None,
     ) -> None:
@@ -116,7 +116,7 @@ class SupportAgentWorkflow:
             f"Created {action_type} approval {approval.id}.",
             draft_reply,
         )
-        return run
+        return self.store.get_run(run.id)
 
     def approve(self, approval_id: str, decided_by: str = "support.lead", note: str = "") -> AgentRun:
         approval = self.store.get_approval(approval_id)
@@ -146,7 +146,7 @@ class SupportAgentWorkflow:
             approval.proposed_reply,
         )
         self._audit(ticket.tenant_id, decided_by, "approval_approved", "approval", approval.id, {"run_id": run.id})
-        return run
+        return self.store.get_run(run.id)
 
     def reject(self, approval_id: str, decided_by: str = "support.lead", note: str = "") -> AgentRun:
         approval = self.store.get_approval(approval_id)
@@ -168,7 +168,7 @@ class SupportAgentWorkflow:
         self.store.update_ticket(ticket)
         self._record_step(run, "human_approval", "blocked", f"Approval rejected: {note or 'no note'}", note)
         self._audit(ticket.tenant_id, decided_by, "approval_rejected", "approval", approval.id, {"run_id": run.id})
-        return run
+        return self.store.get_run(run.id)
 
     def _triage(self, ticket: Ticket) -> Dict[str, str]:
         text = f"{ticket.subject} {ticket.description}".lower()
@@ -303,6 +303,7 @@ class SupportAgentWorkflow:
         evidence_ids: Optional[List[str]] = None,
         tool_call_ids: Optional[List[str]] = None,
     ) -> AgentStep:
+        run.current_node = name
         step = AgentStep(
             run_id=run.id,
             name=name,
@@ -334,4 +335,3 @@ class SupportAgentWorkflow:
                 metadata=metadata,
             )
         )
-

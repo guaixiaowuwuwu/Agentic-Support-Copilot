@@ -7,9 +7,9 @@ from .agents import SupportAgentWorkflow
 from .graph import WORKFLOW_NODES, graph_engine_name
 from .models import Document, Ticket, to_dict
 from .schemas import ApprovalDecisionRequest, CreateDocumentRequest, CreateTicketRequest
-from .store import InMemoryStore, NotFoundError
+from .store import NotFoundError, create_store
 
-store = InMemoryStore(seed=True)
+store = create_store(seed=True)
 workflow = SupportAgentWorkflow(store)
 
 app = FastAPI(title="Agentic Support Copilot API", version="0.1.0")
@@ -135,4 +135,3 @@ def create_document(payload: CreateDocumentRequest) -> dict:
 @app.get("/api/knowledge/documents")
 def list_documents(tenant_id: str = "acme") -> list:
     return to_dict(store.list_documents(tenant_id=tenant_id))
-

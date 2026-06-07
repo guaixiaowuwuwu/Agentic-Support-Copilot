@@ -22,12 +22,16 @@ CREATE TABLE IF NOT EXISTS agent_runs (
   status TEXT NOT NULL,
   current_node TEXT NOT NULL,
   triage JSONB NOT NULL DEFAULT '{}'::jsonb,
+  evidence JSONB NOT NULL DEFAULT '[]'::jsonb,
   verifier_report JSONB NOT NULL DEFAULT '{}'::jsonb,
   final_reply TEXT,
   approval_id UUID,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+ALTER TABLE agent_runs
+  ADD COLUMN IF NOT EXISTS evidence JSONB NOT NULL DEFAULT '[]'::jsonb;
 
 CREATE TABLE IF NOT EXISTS agent_steps (
   id UUID PRIMARY KEY,
@@ -67,6 +71,8 @@ CREATE TABLE IF NOT EXISTS document_chunks (
 
 CREATE INDEX IF NOT EXISTS idx_document_chunks_tenant ON document_chunks(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_document_chunks_embedding ON document_chunks USING ivfflat (embedding vector_cosine_ops);
+CREATE INDEX IF NOT EXISTS idx_agent_runs_ticket ON agent_runs(ticket_id);
+CREATE INDEX IF NOT EXISTS idx_agent_steps_run ON agent_steps(run_id);
 
 CREATE TABLE IF NOT EXISTS tool_calls (
   id UUID PRIMARY KEY,
@@ -78,6 +84,8 @@ CREATE TABLE IF NOT EXISTS tool_calls (
   started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   ended_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+CREATE INDEX IF NOT EXISTS idx_tool_calls_run ON tool_calls(run_id);
 
 CREATE TABLE IF NOT EXISTS approvals (
   id UUID PRIMARY KEY,
@@ -94,6 +102,8 @@ CREATE TABLE IF NOT EXISTS approvals (
   decided_at TIMESTAMPTZ
 );
 
+CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status);
+
 CREATE TABLE IF NOT EXISTS audit_logs (
   id UUID PRIMARY KEY,
   tenant_id TEXT NOT NULL,
@@ -104,4 +114,3 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-
