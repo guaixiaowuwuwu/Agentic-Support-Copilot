@@ -1,0 +1,16 @@
+{
+  "name": "agentic-support-copilot",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/web",
+    "packages/shared"
+  ],
+  "scripts": {
+    "dev:web": "npm --workspace apps/web run dev",
+    "build:web": "npm --workspace apps/web run build",
+    "lint:web": "npm --workspace apps/web run lint",
+    "test:api": "python3 -m unittest discover -s apps/api/tests"
+  }
+}
+

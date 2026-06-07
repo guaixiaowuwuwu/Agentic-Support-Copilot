@@ -1,0 +1,47 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: support-copilot-postgres
+    environment:
+      POSTGRES_DB: support_copilot
+      POSTGRES_USER: support
+      POSTGRES_PASSWORD: support
+    ports:
+      - "5432:5432"
+    volumes:
+      - support_copilot_pg:/var/lib/postgresql/data
+      - ./schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U support -d support_copilot"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: support-copilot-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    container_name: support-copilot-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: support
+      MINIO_ROOT_PASSWORD: support-secret
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - support_copilot_minio:/data
+
+volumes:
+  support_copilot_pg:
+  support_copilot_minio:
+
