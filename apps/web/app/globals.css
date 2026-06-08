@@ -760,6 +760,16 @@ tr:last-child td {
   font-weight: 700;
 }
 
+.tool-status-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
 .list {
   display: grid;
   gap: 0;

@@ -1,4 +1,4 @@
-import type { AdminConfig } from "@support-copilot/shared";
+import type { AdminConfig, ToolConfigStatus } from "@support-copilot/shared";
 import { KeyRound, Settings, ShieldCheck, Wrench } from "lucide-react";
 
 import { ApiErrorState, StatePanel } from "@/components/page-state";
@@ -8,6 +8,31 @@ import { hasCapability } from "@/lib/rbac";
 import { getCurrentUserResult, serverApiGet } from "@/lib/server-api";
 
 export const dynamic = "force-dynamic";
+
+function modeBadgeClass(mode: string) {
+  if (mode === "configured") {
+    return "badge-green";
+  }
+  if (mode === "blocked_write_tool") {
+    return "badge-red";
+  }
+  if (mode === "disabled") {
+    return "badge-neutral";
+  }
+  return "badge-amber";
+}
+
+function fallbackToolStatus(config: AdminConfig): ToolConfigStatus[] {
+  const configured = new Set(config.tools.configured_backends);
+  return config.tools.allowed.map((tool) => ({
+    name: tool,
+    allowed: true,
+    configured: configured.has(tool),
+    read_only: true,
+    mode: configured.has(tool) ? "configured" : "deterministic_fallback",
+    backend_type: configured.has(tool) ? tool : "none"
+  }));
+}
 
 export default async function AdminPage() {
   const { dict } = await getI18n();
@@ -57,6 +82,13 @@ export default async function AdminPage() {
       </main>
     );
   }
+  const toolStatuses = config.tools.status?.length ? config.tools.status : fallbackToolStatus(config);
+  const modeLabels: Record<string, string> = {
+    configured: dict.admin.modeConfigured,
+    deterministic_fallback: dict.admin.modeFallback,
+    blocked_write_tool: dict.admin.modeBlocked,
+    disabled: dict.admin.modeDisabled
+  };
 
   return (
     <main className="page">
@@ -115,6 +147,47 @@ export default async function AdminPage() {
               </article>
             ))}
           </div>
+        </div>
+      </section>
+
+      <section className="surface">
+        <div className="surface-header">
+          <h2>{dict.admin.toolStatus}</h2>
+        </div>
+        <div className="list">
+          {toolStatuses.map((tool) => (
+            <article className="list-item" key={tool.name}>
+              <div className="list-head">
+                <strong>{tool.name}</strong>
+                <span className={`badge ${modeBadgeClass(tool.mode)}`}>
+                  {modeLabels[tool.mode] ?? tool.mode}
+                </span>
+              </div>
+              <div className="tool-status-meta">
+                <span>
+                  {dict.admin.backend}: {tool.backend_type}
+                </span>
+                <span>
+                  {dict.admin.readOnly}: {tool.read_only ? dict.admin.yes : dict.admin.no}
+                </span>
+                {typeof tool.timeout_seconds === "number" ? (
+                  <span>
+                    {dict.admin.timeout}: {tool.timeout_seconds}s
+                  </span>
+                ) : null}
+                {typeof tool.retry_count === "number" ? (
+                  <span>
+                    {dict.admin.retries}: {tool.retry_count}
+                  </span>
+                ) : null}
+                {typeof tool.result_limit === "number" ? (
+                  <span>
+                    {dict.admin.resultLimit}: {tool.result_limit}
+                  </span>
+                ) : null}
+              </div>
+            </article>
+          ))}
         </div>
       </section>
 

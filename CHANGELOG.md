@@ -2,6 +2,29 @@
 
 > 本日志按每次更新的能力内容分组，不按日期分组。
 
+## 真实只读工具加固与配置状态展示
+
+### 新增
+- 工具 registry 增加非敏感配置状态输出，覆盖工具是否允许、是否配置真实 backend、是否只读、backend 类型、timeout、retry 和 result limit。
+- `/api/health` 和 `/api/admin/config` 返回工具状态列表；`/admin` 页面新增“工具状态”区域，展示真实后端、确定性回退、禁用和写工具阻断状态。
+- Jira / GitHub 只读 issue search 支持可配置超时和瞬时失败重试。
+- 新增 `SUPPORT_COPILOT_TOOL_TIMEOUT_SECONDS`、`SUPPORT_COPILOT_TOOL_RETRY_COUNT` / `SUPPORT_COPILOT_TOOL_RETRIES` 和 `SUPPORT_COPILOT_TOOL_RESULT_LIMIT` 配置说明。
+
+### 变更
+- 工具 registry 现在只允许 `log_search`、`db_read`、`jira_search` 和 `github_search` 四类只读工具；写操作工具即使被配置进白名单也会被阻断，并要求先设计审批和审计。
+- `db_read` 现在要求显式 `tenant_id = :tenant_id` 或 `tenant_id = %(tenant_id)s` 过滤，并在生成摘要前丢弃返回列中 `tenant_id` 不匹配当前工单租户的行。
+- 工具输出统一按 1000 字符截断并脱敏，避免 secret、token、API key 或跨租户 metadata 进入 trace / audit。
+- README 同步补齐只读工具超时、重试、结果截断、tenant scope 和状态展示说明。
+
+### 验证
+- 新增 401 工单真实日志与 metadata 查询测试，覆盖 `request_id` 命中、跨租户日志 / DB 结果不进入 trace、工具输出脱敏和截断。
+- 新增 HTTP issue search 瞬时失败重试测试和写工具阻断测试。
+- 后端单元测试通过：`.venv/bin/python -m unittest discover -s apps/api/tests`。
+- 前端 production build 通过：`npm --workspace apps/web run build`。
+- 浏览器 E2E 通过：`npm run test:e2e`。
+- diff 格式检查通过：`git diff --check`。
+- 已用 in-app Browser 验证 `/admin` 工具状态渲染，并确认页面正文不暴露 token/API key/Bearer 形态的敏感值。
+
 ## 审计追踪与可观测性工作台
 
 ### 新增

@@ -280,7 +280,41 @@ export const demoAdminConfig: AdminConfig = {
   },
   tools: {
     allowed: ["log_search", "db_read", "jira_search", "github_search"],
-    configured_backends: []
+    configured_backends: [],
+    status: [
+      {
+        name: "log_search",
+        allowed: true,
+        configured: false,
+        read_only: true,
+        mode: "deterministic_fallback",
+        backend_type: "none"
+      },
+      {
+        name: "db_read",
+        allowed: true,
+        configured: false,
+        read_only: true,
+        mode: "deterministic_fallback",
+        backend_type: "none"
+      },
+      {
+        name: "jira_search",
+        allowed: true,
+        configured: false,
+        read_only: true,
+        mode: "deterministic_fallback",
+        backend_type: "none"
+      },
+      {
+        name: "github_search",
+        allowed: true,
+        configured: false,
+        read_only: true,
+        mode: "deterministic_fallback",
+        backend_type: "none"
+      }
+    ]
   }
 };
 

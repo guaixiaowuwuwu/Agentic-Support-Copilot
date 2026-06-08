@@ -245,6 +245,7 @@ def health() -> dict:
         "tools": {
             "allowed": sorted(workflow.tools.allowed_tools),
             "configured_backends": workflow.tools.configured_backends(),
+            "status": workflow.tools.config_status(),
         },
     }
 
@@ -601,5 +602,6 @@ def get_admin_config(principal: Principal = Depends(get_current_principal)) -> d
         "tools": {
             "allowed": sorted(workflow.tools.allowed_tools),
             "configured_backends": workflow.tools.configured_backends(),
+            "status": workflow.tools.config_status(),
         },
     }

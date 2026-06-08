@@ -153,6 +153,19 @@ export interface AuditLog {
   created_at: string;
 }
 
+export interface ToolConfigStatus {
+  name: string;
+  allowed: boolean;
+  configured: boolean;
+  read_only: boolean;
+  mode: string;
+  backend_type: string;
+  result_limit?: number;
+  timeout_seconds?: number;
+  retry_count?: number;
+  [key: string]: string | number | boolean | null | undefined;
+}
+
 export interface AdminConfig {
   environment: string;
   store: string;
@@ -167,5 +180,6 @@ export interface AdminConfig {
   tools: {
     allowed: string[];
     configured_backends: string[];
+    status?: ToolConfigStatus[];
   };
 }

@@ -72,7 +72,10 @@ class ApiAuthTest(unittest.TestCase):
         )
 
     def test_business_api_requires_authenticated_user_context(self) -> None:
-        self.assertEqual(self.client.get("/api/health").status_code, 200)
+        health_response = self.client.get("/api/health")
+        self.assertEqual(health_response.status_code, 200)
+        self.assertIn("status", health_response.json()["tools"])
+        self.assertTrue(all(tool["read_only"] for tool in health_response.json()["tools"]["status"]))
 
         response = self.client.get("/api/tickets")
 

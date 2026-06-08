@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import json
 import sys
 import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
 from typing import Dict, Sequence
+from unittest.mock import patch
+from urllib.error import URLError
 
 API_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(API_ROOT))
@@ -15,7 +18,14 @@ from app.knowledge import EMBEDDING_DIMENSIONS, KeywordRetriever, VectorRetrieve
 from app.llm import LLMError
 from app.models import Document, Evidence, Ticket
 from app.store import InMemoryStore
-from app.tools import LogSearchTool, ReadOnlyDatabaseTool, ToolBackendError, ToolPermissionError, ToolRegistry
+from app.tools import (
+    GitHubSearchTool,
+    LogSearchTool,
+    ReadOnlyDatabaseTool,
+    ToolBackendError,
+    ToolPermissionError,
+    ToolRegistry,
+)
 
 
 class FakeChatClient:
@@ -61,6 +71,20 @@ class FailingToolBackend:
 
     def execute(self, context) -> str:
         raise ToolBackendError(self.message)
+
+
+class FakeHTTPResponse:
+    def __init__(self, payload: dict) -> None:
+        self.payload = json.dumps(payload).encode("utf-8")
+
+    def __enter__(self) -> "FakeHTTPResponse":
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return self.payload
 
 
 class SupportWorkflowTest(unittest.TestCase):
@@ -375,6 +399,68 @@ class SupportWorkflowTest(unittest.TestCase):
         self.assertNotIn("globex-token", call.output_summary)
         self.assertNotIn("acme-secret-token", call.output_summary)
 
+    def test_api_401_run_uses_real_log_and_db_backends_without_cross_tenant_trace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = Path(tmpdir) / "auth.log"
+            log_path.write_text(
+                "\n".join(
+                    [
+                        "tenant_id=globex request_id=req_789 status=401 token=globex-log-secret",
+                        "tenant_id=acme request_id=req_789 status=401 service=auth-api token=acme-log-secret",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            db_path = Path(tmpdir) / "support.db"
+            conn = sqlite3.connect(db_path)
+            conn.execute("CREATE TABLE request_metadata (tenant_id TEXT, request_id TEXT, status TEXT, reason TEXT)")
+            conn.execute(
+                "INSERT INTO request_metadata VALUES (?, ?, ?, ?)",
+                ("acme", "req_789", "401", "expired token metadata"),
+            )
+            conn.execute(
+                "INSERT INTO request_metadata VALUES (?, ?, ?, ?)",
+                ("globex", "req_789", "401", "globex internal metadata"),
+            )
+            conn.commit()
+            conn.close()
+
+            store = InMemoryStore(seed=True)
+            registry = ToolRegistry(
+                allowed_tools=["log_search", "db_read"],
+                backends={
+                    "log_search": LogSearchTool([str(log_path)]),
+                    "db_read": ReadOnlyDatabaseTool(
+                        database_url=f"sqlite:///{db_path}",
+                        query=(
+                            "SELECT tenant_id, status, reason FROM request_metadata "
+                            "WHERE request_id = :request_id OR tenant_id = :tenant_id"
+                        ),
+                    ),
+                },
+            )
+            workflow = SupportAgentWorkflow(store, tools=registry)
+            ticket = store.create_ticket(
+                Ticket(
+                    tenant_id="acme",
+                    customer_name="Alice",
+                    channel="email",
+                    subject="API 401",
+                    description="Customer sees API 401. request_id=req_789",
+                )
+            )
+
+            run = workflow.start_run(ticket.id)
+            serialized_trace = str([call.output_summary for call in store.get_tool_calls_for_run(run.id)])
+
+        self.assertIn("auth-api", serialized_trace)
+        self.assertIn("expired token metadata", serialized_trace)
+        self.assertIn("[REDACTED]", serialized_trace)
+        self.assertNotIn("globex-log-secret", serialized_trace)
+        self.assertNotIn("globex internal metadata", serialized_trace)
+        self.assertNotIn("acme-log-secret", serialized_trace)
+
     def test_readonly_database_backend_executes_select_and_blocks_writes(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "support.db"
@@ -383,6 +469,10 @@ class SupportWorkflowTest(unittest.TestCase):
             conn.execute(
                 "INSERT INTO request_metadata VALUES (?, ?, ?, ?)",
                 ("acme", "req_123", "401", "expired token"),
+            )
+            conn.execute(
+                "INSERT INTO request_metadata VALUES (?, ?, ?, ?)",
+                ("globex", "req_123", "401", "globex private reason"),
             )
             conn.commit()
             conn.close()
@@ -416,14 +506,117 @@ class SupportWorkflowTest(unittest.TestCase):
                     )
                 },
             )
+            unscoped_registry = ToolRegistry(
+                allowed_tools=["db_read"],
+                backends={
+                    "db_read": ReadOnlyDatabaseTool(
+                        database_url=db_url,
+                        query=(
+                            "SELECT status, reason FROM request_metadata "
+                            "WHERE request_id = :request_id AND tenant_id <> :tenant_id"
+                        ),
+                    )
+                },
+            )
 
             read_call = readonly_registry.execute("run-id", "db_read", ticket)
             write_call = write_registry.execute("run-id", "db_read", ticket)
+            unscoped_call = unscoped_registry.execute("run-id", "db_read", ticket)
 
         self.assertEqual(read_call.status, "success")
         self.assertIn("expired token", read_call.output_summary)
+        self.assertNotIn("globex private reason", read_call.output_summary)
         self.assertEqual(write_call.status, "failed")
         self.assertIn("Only SELECT or WITH", write_call.output_summary)
+        self.assertEqual(unscoped_call.status, "failed")
+        self.assertIn("tenant_id = :tenant_id", unscoped_call.output_summary)
+
+    def test_tool_output_is_clipped_and_redacted(self) -> None:
+        registry = ToolRegistry(
+            allowed_tools=["log_search"],
+            backends={"log_search": FakeToolBackend("token=very-secret-value " + ("x" * 1600))},
+        )
+        ticket = Ticket(
+            tenant_id="acme",
+            customer_name="Dana",
+            channel="email",
+            subject="API 401",
+            description="request_id=req_clip",
+        )
+
+        call = registry.execute("run-id", "log_search", ticket)
+
+        self.assertLessEqual(len(call.output_summary), 1000)
+        self.assertIn("[REDACTED]", call.output_summary)
+        self.assertNotIn("very-secret-value", call.output_summary)
+        self.assertTrue(call.output_summary.endswith("..."))
+
+    def test_http_issue_search_retries_transient_failures(self) -> None:
+        attempts = []
+
+        def fake_urlopen(request, timeout):
+            attempts.append((request.full_url, timeout))
+            if len(attempts) == 1:
+                raise URLError("temporary timeout token=network-secret")
+            return FakeHTTPResponse(
+                {
+                    "items": [
+                        {
+                            "repository_url": "https://api.github.com/repos/acme/api",
+                            "number": 42,
+                            "title": "401 request metadata regression",
+                            "state": "open",
+                        }
+                    ]
+                }
+            )
+
+        tool = GitHubSearchTool(
+            repos=["acme/api"],
+            base_url="https://github.internal/api",
+            token="github-secret-token",
+            max_results=1,
+            timeout_seconds=2,
+            retry_count=1,
+        )
+        ticket = Ticket(
+            tenant_id="acme",
+            customer_name="Dana",
+            channel="email",
+            subject="Checkout bug",
+            description="request_id=req_retry",
+        )
+
+        with patch("app.tools.urlopen", side_effect=fake_urlopen):
+            output = tool.execute(ToolRegistry()._context("run-id", "github_search", ticket, {}))
+
+        self.assertEqual(len(attempts), 2)
+        self.assertEqual(attempts[0][1], 2)
+        self.assertIn("acme/api#42", output)
+        self.assertNotIn("github-secret-token", output)
+        self.assertNotIn("network-secret", output)
+
+    def test_config_status_blocks_write_tools_without_exposing_backend_secrets(self) -> None:
+        registry = ToolRegistry(
+            allowed_tools=["log_search", "jira_create"],
+            backends={"log_search": FakeToolBackend("ok")},
+        )
+        ticket = Ticket(
+            tenant_id="acme",
+            customer_name="Dana",
+            channel="email",
+            subject="API 401",
+            description="request_id=req_write",
+        )
+
+        status_by_name = {item["name"]: item for item in registry.config_status()}
+
+        self.assertIn("log_search", registry.allowed_tools)
+        self.assertNotIn("jira_create", registry.allowed_tools)
+        self.assertEqual(status_by_name["jira_create"]["mode"], "blocked_write_tool")
+        self.assertFalse(status_by_name["jira_create"]["read_only"])
+        with self.assertRaises(ToolPermissionError):
+            registry.execute("run-id", "jira_create", ticket)
 
     def test_bug_reports_plan_readonly_jira_and_github_searches(self) -> None:
         registry = ToolRegistry(

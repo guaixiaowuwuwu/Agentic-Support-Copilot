@@ -25,8 +25,11 @@ except ImportError:  # pragma: no cover - optional runtime dependency.
 
 
 DEFAULT_ALLOWED_TOOLS = ("log_search", "db_read", "jira_search", "github_search")
+READ_ONLY_TOOL_NAMES = frozenset(DEFAULT_ALLOWED_TOOLS)
 DEFAULT_TOOL_RESULT_LIMIT = 5
 DEFAULT_HTTP_TIMEOUT_SECONDS = 8
+DEFAULT_TOOL_RETRY_COUNT = 1
+TOOL_OUTPUT_SUMMARY_LIMIT = 1000
 
 REQUEST_ID_RE = re.compile(
     r"\b(?:request[_-]?id|req(?:uest)?id)\s*[:=]\s*([a-zA-Z0-9._:-]+)\b",
@@ -41,6 +44,10 @@ SQL_FORBIDDEN_RE = re.compile(
     re.IGNORECASE,
 )
 TENANT_MARKER_RE = re.compile(r"\btenant(?:_id)?\s*[:=]\s*([a-zA-Z0-9_-]+)\b", re.IGNORECASE)
+TENANT_EQUALS_RE = re.compile(
+    r"\btenant_id\b\s*=\s*(?::tenant_id|%\(\s*tenant_id\s*\)s)\b",
+    re.IGNORECASE,
+)
 
 
 class ToolPermissionError(PermissionError):
@@ -71,6 +78,10 @@ def create_tool_registry_from_env() -> "ToolRegistry":
     allowed_tools = _split_csv(os.getenv("SUPPORT_COPILOT_ALLOWED_TOOLS")) or list(DEFAULT_ALLOWED_TOOLS)
     result_limit = _env_int("SUPPORT_COPILOT_TOOL_RESULT_LIMIT", DEFAULT_TOOL_RESULT_LIMIT)
     timeout_seconds = _env_int("SUPPORT_COPILOT_TOOL_TIMEOUT_SECONDS", DEFAULT_HTTP_TIMEOUT_SECONDS)
+    retry_count = _env_int(
+        "SUPPORT_COPILOT_TOOL_RETRY_COUNT",
+        _env_int("SUPPORT_COPILOT_TOOL_RETRIES", DEFAULT_TOOL_RETRY_COUNT),
+    )
 
     backends: Dict[str, ToolBackend] = {}
 
@@ -104,6 +115,7 @@ def create_tool_registry_from_env() -> "ToolRegistry":
             search_path=os.getenv("SUPPORT_COPILOT_JIRA_SEARCH_PATH", "/rest/api/3/search"),
             max_results=result_limit,
             timeout_seconds=timeout_seconds,
+            retry_count=retry_count,
         )
 
     github_repos = _split_csv(os.getenv("SUPPORT_COPILOT_GITHUB_REPOS"))
@@ -115,6 +127,7 @@ def create_tool_registry_from_env() -> "ToolRegistry":
             api_version=os.getenv("SUPPORT_COPILOT_GITHUB_API_VERSION"),
             max_results=result_limit,
             timeout_seconds=timeout_seconds,
+            retry_count=retry_count,
         )
 
     return ToolRegistry(allowed_tools=allowed_tools, backends=backends)
@@ -126,10 +139,16 @@ class ToolRegistry:
         allowed_tools: Iterable[str] = DEFAULT_ALLOWED_TOOLS,
         backends: Optional[Mapping[str, ToolBackend]] = None,
     ) -> None:
-        self.allowed_tools = set(allowed_tools)
-        self.backends = dict(backends or {})
+        self.requested_tools = {tool.strip() for tool in allowed_tools if tool and tool.strip()}
+        self.allowed_tools = {tool for tool in self.requested_tools if tool in READ_ONLY_TOOL_NAMES}
+        self.disabled_write_tools = sorted(tool for tool in self.requested_tools if tool not in READ_ONLY_TOOL_NAMES)
+        self.backends = {name: backend for name, backend in dict(backends or {}).items() if name in READ_ONLY_TOOL_NAMES}
 
     def ensure_allowed(self, tool_name: str) -> None:
+        if tool_name not in READ_ONLY_TOOL_NAMES:
+            raise ToolPermissionError(
+                f"Tool '{tool_name}' is not a read-only tool. Write tools require approval and audit design first."
+            )
         if tool_name not in self.allowed_tools:
             raise ToolPermissionError(f"Tool '{tool_name}' is not in the whitelist")
 
@@ -172,7 +191,7 @@ class ToolRegistry:
                 tool_name=tool_name,
                 status=status,
                 input_summary=context.input_summary,
-                output_summary=_clip(redact_secrets(output), 1000),
+                output_summary=_clip(redact_secrets(output), TOOL_OUTPUT_SUMMARY_LIMIT),
             )
             set_span_attributes(
                 span,
@@ -197,6 +216,37 @@ class ToolRegistry:
 
     def configured_backends(self) -> List[str]:
         return sorted(self.backends)
+
+    def config_status(self) -> List[Dict[str, Any]]:
+        statuses: List[Dict[str, Any]] = []
+        tool_names = sorted(READ_ONLY_TOOL_NAMES | self.requested_tools | set(self.backends))
+        for tool_name in tool_names:
+            backend = self.backends.get(tool_name)
+            read_only = tool_name in READ_ONLY_TOOL_NAMES
+            allowed = tool_name in self.allowed_tools
+            configured = backend is not None
+            if not read_only:
+                mode = "blocked_write_tool"
+            elif not allowed:
+                mode = "disabled"
+            elif configured:
+                mode = "configured"
+            else:
+                mode = "deterministic_fallback"
+
+            backend_status = _backend_config_status(backend)
+            statuses.append(
+                {
+                    "name": tool_name,
+                    "allowed": allowed,
+                    "configured": configured,
+                    "read_only": read_only,
+                    "mode": mode,
+                    "backend_type": backend_status.pop("backend_type", "none"),
+                    **backend_status,
+                }
+            )
+        return statuses
 
     def _context(
         self,
@@ -239,11 +289,6 @@ class ToolRegistry:
                 "Read-only GitHub search completed in deterministic fallback mode. No code, issue, or pull "
                 "request was created or modified."
             )
-        if tool_name == "jira_create":
-            return (
-                f"Jira escalation draft SUP-{ticket.id[:8].upper()} prepared for support review. "
-                "No external ticket was written without approval."
-            )
         return f"Unknown tool '{tool_name}'. No external action was performed."
 
 
@@ -282,6 +327,15 @@ class LogSearchTool:
             f"Read-only log search scanned {scanned} files and found {len(matches)} tenant-scoped matches. "
             f"Top signals: {summary}"
         )
+
+    def config_status(self) -> Dict[str, Any]:
+        return {
+            "backend_type": "log_files",
+            "path_count": len(self.log_paths),
+            "configured_file_count": len(self._candidate_files()),
+            "result_limit": self.max_lines,
+            "max_bytes": self.max_bytes,
+        }
 
     def _candidate_files(self) -> List[Path]:
         files: List[Path] = []
@@ -330,7 +384,17 @@ class ReadOnlyDatabaseTool:
             rows = self._execute_sqlite(context)
         else:
             rows = self._execute_postgres(context)
+        rows = _filter_tenant_rows(rows, context.ticket.tenant_id)
         return _summarize_rows("Read-only database query", rows, self.max_rows)
+
+    def config_status(self) -> Dict[str, Any]:
+        return {
+            "backend_type": "sqlite" if self.database_url.startswith("sqlite:///") else "postgres",
+            "query_configured": bool(self.query.strip()),
+            "tenant_scoped": _sql_has_tenant_equality(self.query),
+            "result_limit": self.max_rows,
+            "timeout_seconds": self.timeout_seconds,
+        }
 
     def _params(self, context: ToolExecutionContext) -> Dict[str, Any]:
         return {
@@ -384,6 +448,7 @@ class JiraSearchTool:
         search_path: str = "/rest/api/3/search",
         max_results: int = DEFAULT_TOOL_RESULT_LIMIT,
         timeout_seconds: int = DEFAULT_HTTP_TIMEOUT_SECONDS,
+        retry_count: int = DEFAULT_TOOL_RETRY_COUNT,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.email = email
@@ -394,6 +459,7 @@ class JiraSearchTool:
         self.search_path = search_path
         self.max_results = max(1, max_results)
         self.timeout_seconds = max(1, timeout_seconds)
+        self.retry_count = max(0, retry_count)
 
     def execute(self, context: ToolExecutionContext) -> str:
         if not (self.bearer_token or (self.email and self.api_token)):
@@ -411,7 +477,14 @@ class JiraSearchTool:
             **self._auth_headers(),
         }
         body = json.dumps(payload).encode("utf-8")
-        data = _http_json("POST", _join_url(self.base_url, self.search_path), headers, body, self.timeout_seconds)
+        data = _http_json(
+            "POST",
+            _join_url(self.base_url, self.search_path),
+            headers,
+            body,
+            self.timeout_seconds,
+            retry_count=self.retry_count,
+        )
 
         issues = data.get("issues") or []
         if not issues:
@@ -444,6 +517,17 @@ class JiraSearchTool:
         token = base64.b64encode(f"{self.email}:{self.api_token}".encode("utf-8")).decode("ascii")
         return {"Authorization": f"Basic {token}"}
 
+    def config_status(self) -> Dict[str, Any]:
+        return {
+            "backend_type": "jira",
+            "credentials_configured": bool(self.bearer_token or (self.email and self.api_token)),
+            "project_scoped": bool(self.project_key),
+            "custom_query_template": bool(self.jql_template),
+            "result_limit": self.max_results,
+            "timeout_seconds": self.timeout_seconds,
+            "retry_count": self.retry_count,
+        }
+
 
 class GitHubSearchTool:
     def __init__(
@@ -454,6 +538,7 @@ class GitHubSearchTool:
         api_version: Optional[str] = None,
         max_results: int = DEFAULT_TOOL_RESULT_LIMIT,
         timeout_seconds: int = DEFAULT_HTTP_TIMEOUT_SECONDS,
+        retry_count: int = DEFAULT_TOOL_RETRY_COUNT,
     ) -> None:
         self.repos = [_safe_repo(repo) for repo in repos if _safe_repo(repo)]
         self.base_url = base_url.rstrip("/")
@@ -461,6 +546,7 @@ class GitHubSearchTool:
         self.api_version = api_version
         self.max_results = max(1, max_results)
         self.timeout_seconds = max(1, timeout_seconds)
+        self.retry_count = max(0, retry_count)
 
     def execute(self, context: ToolExecutionContext) -> str:
         if not self.repos:
@@ -481,6 +567,7 @@ class GitHubSearchTool:
                 headers,
                 None,
                 self.timeout_seconds,
+                retry_count=self.retry_count,
             )
             collected.extend(data.get("items") or [])
             if len(collected) >= self.max_results:
@@ -502,6 +589,17 @@ class GitHubSearchTool:
             f"Top matches: {' | '.join(summaries)}"
         )
 
+    def config_status(self) -> Dict[str, Any]:
+        return {
+            "backend_type": "github",
+            "repo_count": len(self.repos),
+            "token_configured": bool(self.token),
+            "api_version_configured": bool(self.api_version),
+            "result_limit": self.max_results,
+            "timeout_seconds": self.timeout_seconds,
+            "retry_count": self.retry_count,
+        }
+
 
 def extract_request_id(ticket: Ticket) -> Optional[str]:
     text = f"{ticket.subject} {ticket.description}"
@@ -520,6 +618,16 @@ def _env_int(name: str, default: int) -> int:
         return int(os.getenv(name, str(default)))
     except ValueError:
         return default
+
+
+def _backend_config_status(backend: Optional[ToolBackend]) -> Dict[str, Any]:
+    if backend is None:
+        return {}
+    status_method = getattr(backend, "config_status", None)
+    if callable(status_method):
+        status = status_method()
+        return dict(status) if isinstance(status, Mapping) else {"backend_type": backend.__class__.__name__}
+    return {"backend_type": backend.__class__.__name__}
 
 
 def _clip(text: str, limit: int) -> str:
@@ -567,11 +675,29 @@ def _ensure_read_only_sql(sql: str) -> None:
 
 
 def _ensure_tenant_scoped_sql(sql: str) -> None:
-    lowered = sql.lower()
-    if "tenant_id" not in lowered:
-        raise ToolBackendError("Read-only SQL must include tenant_id filtering")
-    if "%(tenant_id)s" not in lowered and ":tenant_id" not in lowered:
-        raise ToolBackendError("Read-only SQL must bind the tenant_id parameter")
+    if not _sql_has_tenant_equality(sql):
+        raise ToolBackendError("Read-only SQL must include tenant_id = :tenant_id or tenant_id = %(tenant_id)s")
+
+
+def _sql_has_tenant_equality(sql: str) -> bool:
+    return bool(TENANT_EQUALS_RE.search(sql))
+
+
+def _filter_tenant_rows(rows: List[Mapping[str, Any]], tenant_id: str) -> List[Mapping[str, Any]]:
+    filtered: List[Mapping[str, Any]] = []
+    for row in rows:
+        row_tenant = _row_value(row, "tenant_id")
+        if row_tenant is not None and str(row_tenant) != tenant_id:
+            continue
+        filtered.append(row)
+    return filtered
+
+
+def _row_value(row: Mapping[str, Any], key: str) -> Any:
+    for row_key, value in row.items():
+        if str(row_key).lower() == key:
+            return value
+    return None
 
 
 def _summarize_rows(label: str, rows: List[Mapping[str, Any]], max_rows: int) -> str:
@@ -622,18 +748,28 @@ def _http_json(
     headers: Mapping[str, str],
     body: Optional[bytes],
     timeout_seconds: int,
+    retry_count: int = 0,
 ) -> Mapping[str, Any]:
     request = Request(url, data=body, headers=dict(headers), method=method)
-    try:
-        with urlopen(request, timeout=timeout_seconds) as response:
-            payload = response.read()
-    except HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="ignore")[:300]
-        raise ToolBackendError(f"HTTP {exc.code}: {redact_secrets(detail)}") from exc
-    except URLError as exc:
-        raise ToolBackendError(f"HTTP request failed: {redact_secrets(str(exc.reason))}") from exc
-    except OSError as exc:
-        raise ToolBackendError(f"HTTP request failed: {redact_secrets(str(exc))}") from exc
+    attempts = max(0, retry_count) + 1
+    for attempt in range(attempts):
+        try:
+            with urlopen(request, timeout=timeout_seconds) as response:
+                payload = response.read()
+            break
+        except HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="ignore")[:300]
+            if _should_retry_http_status(exc.code) and attempt < attempts - 1:
+                continue
+            raise ToolBackendError(f"HTTP {exc.code}: {redact_secrets(detail)}") from exc
+        except URLError as exc:
+            if attempt < attempts - 1:
+                continue
+            raise ToolBackendError(f"HTTP request failed: {redact_secrets(str(exc.reason))}") from exc
+        except OSError as exc:
+            if attempt < attempts - 1:
+                continue
+            raise ToolBackendError(f"HTTP request failed: {redact_secrets(str(exc))}") from exc
 
     try:
         data = json.loads(payload.decode("utf-8"))
@@ -642,3 +778,7 @@ def _http_json(
     if not isinstance(data, Mapping):
         raise ToolBackendError("HTTP response JSON was not an object")
     return data
+
+
+def _should_retry_http_status(status_code: int) -> bool:
+    return status_code in {408, 409, 425, 429} or 500 <= status_code < 600

@@ -165,13 +165,20 @@ export SUPPORT_COPILOT_JIRA_API_TOKEN=your-token
 export SUPPORT_COPILOT_JIRA_PROJECT_KEY=SUP
 export SUPPORT_COPILOT_GITHUB_REPOS=example-org/example-repo
 export SUPPORT_COPILOT_GITHUB_TOKEN=your-token
+export SUPPORT_COPILOT_TOOL_TIMEOUT_SECONDS=8
+export SUPPORT_COPILOT_TOOL_RETRY_COUNT=1
+export SUPPORT_COPILOT_TOOL_RESULT_LIMIT=5
 ```
 
-The DB tool rejects non-`SELECT`/`WITH` SQL, requires a bound `tenant_id`
-parameter, and opens PostgreSQL transactions as read-only. Jira and GitHub
-integrations search existing issues only; they do not create or update external
-tickets. Every allowed, failed, or denied tool call is stored as a `ToolCall`
-summary and also recorded in `audit_logs`.
+The DB tool rejects non-`SELECT`/`WITH` SQL, requires an explicit
+`tenant_id = :tenant_id` or `tenant_id = %(tenant_id)s` filter, drops returned
+rows that expose a different `tenant_id`, and opens PostgreSQL transactions as
+read-only. Jira and GitHub integrations retry transient read failures and search
+existing issues only; they do not create or update external tickets. Every
+allowed, failed, or denied tool call is stored as a redacted and truncated
+`ToolCall` summary and also recorded in `audit_logs`. `/api/health` and the
+admin page expose non-sensitive tool status only, such as configured backend
+type, read-only mode, timeout, retry count, and result limit.
 
 Backfill missing chunk embeddings after importing or migrating documents:
 
