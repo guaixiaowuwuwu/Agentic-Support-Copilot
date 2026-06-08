@@ -2,6 +2,31 @@
 
 > 本日志按每次更新的能力内容分组，不按日期分组。
 
+## 可配置 Embedding 与混合检索质量评测
+
+### 新增
+- 新增可配置 embedding provider，默认保留 1536 维 deterministic hashing embedding 作为本地测试和离线 fallback，并支持 OpenAI-compatible `/embeddings` provider。
+- 新增知识库文档 metadata：产品线、版本、权限、有效期和来源系统，并贯穿 document、chunk、evidence、API 响应、PostgreSQL schema 和前端知识库页面。
+- 新增 hybrid search，融合 keyword score 和 vector score，并按租户、产品线、版本、权限和有效期过滤 evidence。
+- 新增 citation 校验报告，记录引用是否来自本次实际检索到的 evidence、引用数量、引用 evidence id 和无效引用。
+- 新增固定 RAG 评测工单集，覆盖 401、billing、bug、outage 和 general 五类场景。
+- `/api/health`、`/api/admin/config` 和 `/admin` 页面新增 embedding provider 状态展示，不暴露 API key。
+
+### 变更
+- workflow 默认使用 hybrid retriever；PostgreSQL 存储走 pgvector + store keyword search，内存模式走 in-memory vector + keyword search。
+- 工单检索会从分诊结果推断产品线和版本过滤上下文，常见 401、账单、缺陷、服务中断和通用支持问题会优先命中对应 runbook。
+- verifier 从“存在引用标记”升级为“引用编号、标题和 URI 必须精确匹配实际 evidence”；未检索到证据、低置信度证据或伪造引用会进入 `manual_review`。
+- 默认 seed 知识库补充 Billing Invoice、Bug Report Triage、Outage Communications 和 General Support Intake runbook。
+- 回复模板按 issue type 生成不同排查建议，不再把所有有证据场景都写成 API 401。
+- README 和 `.env.example` 补齐 embedding provider、metadata、hybrid search、citation verifier 和评测说明。
+
+### 验证
+- 固定 RAG 评测测试断言 hit rate、citation accuracy、no-evidence block rate 和 tenant isolation 均满足验收。
+- 后端单元测试通过：`.venv/bin/python -m unittest discover -s apps/api/tests`。
+- 前端 production build 通过：`npm --workspace apps/web run build`。
+- Python 语法检查通过：`.venv/bin/python -m py_compile apps/api/app/knowledge.py apps/api/app/models.py apps/api/app/store.py apps/api/app/agents.py apps/api/app/main.py apps/api/app/schemas.py`。
+- 已用 in-app Browser 验证 `/knowledge` metadata 表单 / 表格和 `/admin` embedding provider 状态渲染。
+
 ## 真实只读工具加固与配置状态展示
 
 ### 新增

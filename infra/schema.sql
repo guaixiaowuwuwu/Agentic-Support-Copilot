@@ -76,6 +76,12 @@ CREATE TABLE IF NOT EXISTS documents (
   source_type TEXT NOT NULL,
   uri TEXT NOT NULL,
   content TEXT NOT NULL,
+  product_line TEXT,
+  version TEXT,
+  required_permissions TEXT[] NOT NULL DEFAULT '{}',
+  valid_from TEXT,
+  valid_until TEXT,
+  source_system TEXT,
   status TEXT NOT NULL DEFAULT 'active',
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -87,6 +93,14 @@ ALTER TABLE documents
 ALTER TABLE documents
   ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
 
+ALTER TABLE documents
+  ADD COLUMN IF NOT EXISTS product_line TEXT,
+  ADD COLUMN IF NOT EXISTS version TEXT,
+  ADD COLUMN IF NOT EXISTS required_permissions TEXT[] NOT NULL DEFAULT '{}',
+  ADD COLUMN IF NOT EXISTS valid_from TEXT,
+  ADD COLUMN IF NOT EXISTS valid_until TEXT,
+  ADD COLUMN IF NOT EXISTS source_system TEXT;
+
 CREATE TABLE IF NOT EXISTS document_chunks (
   id UUID PRIMARY KEY,
   document_id UUID NOT NULL REFERENCES documents(id),
@@ -96,13 +110,28 @@ CREATE TABLE IF NOT EXISTS document_chunks (
   uri TEXT NOT NULL,
   content TEXT NOT NULL,
   chunk_index INTEGER NOT NULL,
+  product_line TEXT,
+  version TEXT,
+  required_permissions TEXT[] NOT NULL DEFAULT '{}',
+  valid_from TEXT,
+  valid_until TEXT,
+  source_system TEXT,
   embedding vector(1536)
 );
 
 ALTER TABLE document_chunks
   ADD COLUMN IF NOT EXISTS embedding vector(1536);
 
+ALTER TABLE document_chunks
+  ADD COLUMN IF NOT EXISTS product_line TEXT,
+  ADD COLUMN IF NOT EXISTS version TEXT,
+  ADD COLUMN IF NOT EXISTS required_permissions TEXT[] NOT NULL DEFAULT '{}',
+  ADD COLUMN IF NOT EXISTS valid_from TEXT,
+  ADD COLUMN IF NOT EXISTS valid_until TEXT,
+  ADD COLUMN IF NOT EXISTS source_system TEXT;
+
 CREATE INDEX IF NOT EXISTS idx_document_chunks_tenant ON document_chunks(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_document_chunks_metadata ON document_chunks(tenant_id, product_line, version);
 CREATE INDEX IF NOT EXISTS idx_document_chunks_embedding ON document_chunks USING ivfflat (embedding vector_cosine_ops);
 CREATE INDEX IF NOT EXISTS idx_agent_runs_ticket ON agent_runs(ticket_id);
 CREATE INDEX IF NOT EXISTS idx_agent_runs_trace_id ON agent_runs(trace_id);

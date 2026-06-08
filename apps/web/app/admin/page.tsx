@@ -197,6 +197,13 @@ export default async function AdminPage() {
         </div>
         <pre className="reply-preview">{JSON.stringify(config.llm, null, 2)}</pre>
       </section>
+
+      <section className="surface">
+        <div className="surface-header">
+          <h2>{dict.admin.embeddings}</h2>
+        </div>
+        <pre className="reply-preview">{JSON.stringify(config.embeddings ?? {}, null, 2)}</pre>
+      </section>
     </main>
   );
 }

@@ -35,6 +35,12 @@ class Document:
     source_type: str
     uri: str
     content: str
+    product_line: Optional[str] = None
+    version: Optional[str] = None
+    required_permissions: List[str] = field(default_factory=list)
+    valid_from: Optional[str] = None
+    valid_until: Optional[str] = None
+    source_system: Optional[str] = None
     id: str = field(default_factory=new_id)
     status: str = "active"
     created_at: str = field(default_factory=utc_now)
@@ -50,6 +56,12 @@ class DocumentChunk:
     uri: str
     content: str
     chunk_index: int
+    product_line: Optional[str] = None
+    version: Optional[str] = None
+    required_permissions: List[str] = field(default_factory=list)
+    valid_from: Optional[str] = None
+    valid_until: Optional[str] = None
+    source_system: Optional[str] = None
     embedding: Optional[List[float]] = None
     id: str = field(default_factory=new_id)
 
@@ -62,6 +74,16 @@ class Evidence:
     uri: str
     excerpt: str
     score: float
+    source_type: Optional[str] = None
+    product_line: Optional[str] = None
+    version: Optional[str] = None
+    required_permissions: List[str] = field(default_factory=list)
+    valid_from: Optional[str] = None
+    valid_until: Optional[str] = None
+    source_system: Optional[str] = None
+    keyword_score: float = 0.0
+    vector_score: float = 0.0
+    retrieval_mode: str = "unknown"
 
 
 @dataclass

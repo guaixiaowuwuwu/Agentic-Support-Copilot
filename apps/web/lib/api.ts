@@ -278,6 +278,11 @@ export const demoAdminConfig: AdminConfig = {
   llm: {
     enabled: false
   },
+  embeddings: {
+    provider: "hashing",
+    mode: "hashing_fallback",
+    dimensions: 1536
+  },
   tools: {
     allowed: ["log_search", "db_read", "jira_search", "github_search"],
     configured_backends: [],

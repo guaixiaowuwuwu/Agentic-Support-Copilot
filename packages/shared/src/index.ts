@@ -29,6 +29,16 @@ export interface Evidence {
   uri: string;
   excerpt: string;
   score: number;
+  source_type?: string | null;
+  product_line?: string | null;
+  version?: string | null;
+  required_permissions?: string[];
+  valid_from?: string | null;
+  valid_until?: string | null;
+  source_system?: string | null;
+  keyword_score?: number;
+  vector_score?: number;
+  retrieval_mode?: string;
 }
 
 export interface ToolCall {
@@ -120,6 +130,12 @@ export interface Document {
   source_type: string;
   uri: string;
   content: string;
+  product_line?: string | null;
+  version?: string | null;
+  required_permissions?: string[];
+  valid_from?: string | null;
+  valid_until?: string | null;
+  source_system?: string | null;
   status: string;
   created_at: string;
   updated_at: string;
@@ -139,6 +155,12 @@ export interface DocumentChunkSummary {
   uri: string;
   content: string;
   chunk_index: number;
+  product_line?: string | null;
+  version?: string | null;
+  required_permissions?: string[];
+  valid_from?: string | null;
+  valid_until?: string | null;
+  source_system?: string | null;
   embedding_status: "pending" | "embedded" | string;
 }
 
@@ -177,6 +199,7 @@ export interface AdminConfig {
     local_dev_headers_enabled: boolean;
   };
   llm: Record<string, unknown>;
+  embeddings?: Record<string, unknown>;
   tools: {
     allowed: string[];
     configured_backends: string[];

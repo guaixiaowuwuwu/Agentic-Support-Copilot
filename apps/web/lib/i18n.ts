@@ -139,6 +139,12 @@ export const dictionaries = {
       source: "来源类型",
       uri: "URI",
       content: "内容",
+      productLine: "产品线",
+      version: "版本",
+      requiredPermissions: "权限",
+      validFrom: "生效时间",
+      validUntil: "失效时间",
+      sourceSystem: "来源系统",
       create: "创建文档",
       creating: "创建中",
       ingest: "生成 Embedding",
@@ -148,6 +154,7 @@ export const dictionaries = {
       ingestResult: "已更新 {count} 个分块",
       tableTitle: "标题",
       tableSource: "来源",
+      metadata: "元数据",
       tableChunks: "分块",
       tableEmbedding: "Embedding",
       tableCreated: "创建时间",
@@ -209,7 +216,8 @@ export const dictionaries = {
       modeFallback: "确定性回退",
       modeBlocked: "已阻断写工具",
       modeDisabled: "未启用",
-      llm: "LLM"
+      llm: "LLM",
+      embeddings: "Embedding"
     },
     trace: {
       title: "运行追踪",
@@ -376,6 +384,12 @@ export const dictionaries = {
       source: "Source type",
       uri: "URI",
       content: "Content",
+      productLine: "Product line",
+      version: "Version",
+      requiredPermissions: "Permissions",
+      validFrom: "Valid from",
+      validUntil: "Valid until",
+      sourceSystem: "Source system",
       create: "Create document",
       creating: "Creating",
       ingest: "Ingest embeddings",
@@ -385,6 +399,7 @@ export const dictionaries = {
       ingestResult: "Updated {count} chunks",
       tableTitle: "Title",
       tableSource: "Source",
+      metadata: "Metadata",
       tableChunks: "Chunks",
       tableEmbedding: "Embedding",
       tableCreated: "Created",
@@ -446,7 +461,8 @@ export const dictionaries = {
       modeFallback: "Deterministic fallback",
       modeBlocked: "Write tool blocked",
       modeDisabled: "Disabled",
-      llm: "LLM"
+      llm: "LLM",
+      embeddings: "Embeddings"
     },
     trace: {
       title: "Trace",

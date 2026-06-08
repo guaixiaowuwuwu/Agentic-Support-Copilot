@@ -29,13 +29,23 @@ export function KnowledgeActions({ locale, tenantId }: { locale?: Locale; tenant
     setIsCreating(true);
 
     const form = new FormData(event.currentTarget);
+    const requiredPermissions = String(form.get("required_permissions") ?? "")
+      .split(",")
+      .map((item) => item.trim().toLowerCase())
+      .filter(Boolean);
     try {
       await apiPost<Document>("/api/knowledge/documents", {
         tenant_id: tenantId,
         title: form.get("title"),
         source_type: form.get("source_type"),
         uri: form.get("uri"),
-        content: form.get("content")
+        content: form.get("content"),
+        product_line: form.get("product_line") || null,
+        version: form.get("version") || null,
+        required_permissions: requiredPermissions,
+        valid_from: form.get("valid_from") || null,
+        valid_until: form.get("valid_until") || null,
+        source_system: form.get("source_system") || null
       });
       event.currentTarget.reset();
       router.refresh();
@@ -82,6 +92,32 @@ export function KnowledgeActions({ locale, tenantId }: { locale?: Locale; tenant
           <label>
             {dict.uri}
             <input name="uri" required />
+          </label>
+        </div>
+        <div className="form-row">
+          <label>
+            {dict.productLine}
+            <input name="product_line" placeholder="api" />
+          </label>
+          <label>
+            {dict.version}
+            <input name="version" placeholder="v1" />
+          </label>
+          <label>
+            {dict.sourceSystem}
+            <input name="source_system" placeholder="confluence" />
+          </label>
+          <label>
+            {dict.requiredPermissions}
+            <input name="required_permissions" placeholder="support_agent" />
+          </label>
+          <label>
+            {dict.validFrom}
+            <input name="valid_from" placeholder="2026-01-01T00:00:00Z" />
+          </label>
+          <label>
+            {dict.validUntil}
+            <input name="valid_until" placeholder="2030-01-01T00:00:00Z" />
           </label>
         </div>
         <label>

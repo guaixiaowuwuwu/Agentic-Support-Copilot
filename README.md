@@ -8,7 +8,7 @@ Enterprise knowledge base and ticket automation MVP with a multi-agent support w
   `triage -> retrieval -> tool_call_optional -> verifier -> approval -> reply`.
 - Next.js dashboard with ticket list, ticket detail, approval queue, and run trace views.
 - PostgreSQL/pgvector-backed repository for tickets, runs, steps, approvals, documents, chunks, tool calls, and audit logs.
-- 1536-dimensional deterministic local embeddings for private MVP ingestion, with pgvector cosine retrieval and tenant-scoped evidence queries.
+- Configurable 1536-dimensional embeddings with deterministic hashing fallback, pgvector cosine retrieval, hybrid keyword/vector search, tenant-scoped evidence queries, and citation verification.
 - Optional in-memory store for fast local tests and demos.
 - Unit tests covering triage/RAG/verifier, tenant isolation, and tool permissions.
 - Optional OpenAI-compatible chat API integration for customer reply draft generation,
@@ -50,7 +50,7 @@ Recommended order for the next phase:
 2. Remove production-facing demo fallback behavior from the frontend so API failures are visible.
 3. Connect a real enterprise SSO/OIDC/JWT provider or API gateway to the trusted identity header contract.
 4. Connect real read-only tools for logs, metadata databases, Jira, or GitHub while preserving whitelist and redaction rules.
-5. Improve RAG and LLM quality with configurable embeddings, hybrid search, structured verifier checks, and regression evals.
+5. Expand RAG and LLM quality with production embedding providers, hybrid search tuning, structured verifier checks, and regression evals.
 6. Move agent runs to async worker execution with progressive trace updates and retry handling.
 7. Harden deployment with migrations, environment profiles, health checks, secret management, backups, and observability.
 
@@ -144,6 +144,27 @@ For local OpenAI-compatible runtimes such as Ollama, vLLM, or LM Studio, point
 `LLM_BASE_URL` at that server and set `LLM_MODEL` to the local model name. The
 API key and base URL are never returned by `/api/health`.
 
+## Optional Embedding Provider
+
+By default the backend uses deterministic hashing embeddings so local tests and
+offline demos remain stable. Set an OpenAI-compatible `/embeddings` provider to
+generate vectors for new or pending document chunks and retrieval queries:
+
+```bash
+export SUPPORT_COPILOT_EMBEDDING_PROVIDER=openai_compatible
+export SUPPORT_COPILOT_EMBEDDING_BASE_URL=https://api.openai.com/v1
+export SUPPORT_COPILOT_EMBEDDING_MODEL=text-embedding-3-small
+export SUPPORT_COPILOT_EMBEDDING_API_KEY=your-api-key
+export SUPPORT_COPILOT_EMBEDDING_DIMENSIONS=1536
+```
+
+Knowledge documents can carry optional retrieval metadata:
+`product_line`, `version`, `required_permissions`, `valid_from`, `valid_until`,
+and `source_system`. Hybrid search combines keyword and vector scores, filters
+by tenant and metadata, and routes missing or low-confidence evidence to manual
+review. The verifier only passes replies whose citation lines match the actual
+retrieved evidence title and URI.
+
 ## Read-Only External Tools
 
 Agent tool calls still go through an explicit whitelist:
@@ -203,7 +224,10 @@ Open [http://localhost:3000](http://localhost:3000).
 
 ## Run Tests
 
-After installing the API requirements, run the backend tests from the project root:
+After installing the API requirements, run the backend tests from the project root.
+The workflow tests include a fixed RAG eval set for 401, billing, bug, outage,
+and general tickets, and assert hit rate, citation accuracy, no-evidence
+blocking, and tenant isolation metrics:
 
 ```bash
 .venv/bin/python -m unittest discover -s apps/api/tests

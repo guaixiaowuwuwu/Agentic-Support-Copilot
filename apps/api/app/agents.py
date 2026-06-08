@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import re
 import time
 from contextlib import contextmanager
 from typing import Any, Dict, Iterable, List, Optional
 
-from .knowledge import Retriever, create_default_retriever
+from .knowledge import RetrievalFilters, Retriever, create_default_retriever
 from .llm import ChatClient, LLMError
 from .models import AgentRun, AgentStep, Approval, AuditLog, Evidence, Ticket, ToolCall
 from .observability import log_event, set_span_attributes, telemetry_span
@@ -12,6 +13,8 @@ from .security import clip_text, redact_secrets
 from .store import Store
 from .time_utils import utc_now
 from .tools import ToolPermissionError, ToolRegistry
+
+CITATION_RE = re.compile(r"^\s*\[(\d+)\]\s*(.*?)\s*-\s*(\S+)\s*$", re.MULTILINE)
 
 
 @contextmanager
@@ -35,11 +38,19 @@ class SupportAgentWorkflow:
         retriever: Optional[Retriever] = None,
         tools: Optional[ToolRegistry] = None,
         chat_client: Optional[ChatClient] = None,
+        min_retrieval_confidence: float = 0.18,
     ) -> None:
         self.store = store
-        self.retriever = retriever or create_default_retriever(store)
+        embedding_model = getattr(store, "embedding_model", None)
+        if retriever is not None:
+            self.retriever = retriever
+        elif embedding_model is not None:
+            self.retriever = create_default_retriever(store, embedding_model=embedding_model)
+        else:
+            self.retriever = create_default_retriever(store)
         self.tools = tools or ToolRegistry()
         self.chat_client = chat_client
+        self.min_retrieval_confidence = min_retrieval_confidence
 
     def start_run(self, ticket_id: str) -> AgentRun:
         ticket = self.store.get_ticket(ticket_id)
@@ -82,14 +93,25 @@ class SupportAgentWorkflow:
 
             with measure_step() as metric:
                 chunks = None if self.retriever.uses_store_backend else self.store.list_chunks()
-                evidence = self.retriever.search(ticket.tenant_id, f"{ticket.subject} {ticket.description}", chunks)
+                query = f"{ticket.subject} {ticket.description}"
+                retrieval_filters = self._retrieval_filters(ticket, triage)
+                evidence = self.retriever.search(
+                    ticket.tenant_id,
+                    query,
+                    chunks,
+                    filters=retrieval_filters,
+                )
             run.evidence = evidence
             self.store.update_run(run)
+            top_score = max((item.score for item in evidence), default=0.0)
             self._record_step(
                 run,
                 "retrieval",
-                "success" if evidence else "blocked",
-                f"Found {len(evidence)} tenant-scoped evidence chunks.",
+                "success" if top_score >= self.min_retrieval_confidence else "blocked",
+                (
+                    f"Found {len(evidence)} tenant-scoped evidence chunks; "
+                    f"top_score={top_score:.3f}; product_line={retrieval_filters.product_line or 'any'}."
+                ),
                 ticket.subject,
                 latency_ms=metric["latency_ms"],
                 evidence_ids=[item.chunk_id for item in evidence],
@@ -209,7 +231,10 @@ class SupportAgentWorkflow:
 
     def _triage(self, ticket: Ticket) -> Dict[str, str]:
         text = f"{ticket.subject} {ticket.description}".lower()
-        if "401" in text or "unauthorized" in text or "api" in text:
+        outage_terms = ["production down", "outage", "all customers", "sev1"]
+        if any(token in text for token in outage_terms):
+            issue_type = "outage"
+        elif "401" in text or "unauthorized" in text or "api" in text:
             issue_type = "api_auth"
         elif "invoice" in text or "billing" in text:
             issue_type = "billing"
@@ -218,7 +243,7 @@ class SupportAgentWorkflow:
         else:
             issue_type = "general_support"
 
-        if any(token in text for token in ["production down", "outage", "all customers", "sev1"]):
+        if any(token in text for token in outage_terms):
             priority = "P1"
             risk_level = "high"
         elif "401" in text or "bug" in text or "error" in text:
@@ -234,6 +259,30 @@ class SupportAgentWorkflow:
             "risk_level": risk_level,
             "requires_human_approval": "true",
         }
+
+    def _retrieval_filters(self, ticket: Ticket, triage: Dict[str, str]) -> RetrievalFilters:
+        text = f"{ticket.subject} {ticket.description}".lower()
+        product_line = None
+        if triage["issue_type"] == "api_auth" or any(token in text for token in ["api", "oauth", "token", "401"]):
+            product_line = "api"
+        elif triage["issue_type"] == "billing":
+            product_line = "billing"
+        elif triage["issue_type"] in {"bug", "outage"}:
+            product_line = "platform"
+        elif any(token in text for token in ["support", "question", "help", "general"]):
+            product_line = "support"
+
+        version_match = re.search(r"\b(v\d+(?:\.\d+)*)\b|\bversion\s+(\d+(?:\.\d+)*)\b", text)
+        version = None
+        if version_match:
+            version = version_match.group(1) or f"v{version_match.group(2)}"
+
+        return RetrievalFilters(
+            product_line=product_line,
+            version=version,
+            permissions=("support_agent",),
+            as_of=utc_now(),
+        )
 
     def _execute_optional_tools(self, run: AgentRun, ticket: Ticket, triage: Dict[str, str]) -> List[ToolCall]:
         planned_tools = self.tools.plan(ticket, triage)
@@ -345,14 +394,51 @@ class SupportAgentWorkflow:
         if not tool_summary:
             tool_summary = "当前无需额外工具动作。"
 
+        if triage["issue_type"] == "api_auth":
+            guidance = (
+                "最可能的原因是 Authorization header 缺失、Bearer token 已过期、API key 无效，"
+                "或 OAuth scope 不足。建议先确认请求是否使用 `Authorization: Bearer <token>`，"
+                "再检查 token 过期时间和所需 scope。"
+            )
+            next_step = (
+                "请提供 request_id、发生时间、接口路径，以及是否近期轮换过凭证；"
+                "如果确认 token 已过期，请生成新 token 后用同一个 request_id 重试。"
+            )
+            topic = "API 401 问题"
+        elif triage["issue_type"] == "billing":
+            guidance = (
+                "账单问题应先核对账期、发票号、付款状态、税务设置、订阅计划和按比例计费事件。"
+                "退款、贷项或合同变更需要转交账务专员确认。"
+            )
+            next_step = "请提供发票号、账期、账户 ID 和争议的行项目，我们会先核对可见账单记录。"
+            topic = "账单问题"
+        elif triage["issue_type"] == "bug":
+            guidance = (
+                "缺陷排查需要复现步骤、受影响版本、运行环境、期望行为、实际行为，以及截图或日志。"
+                "在升级前应先检索既有 Jira 和 GitHub 记录。"
+            )
+            next_step = "请提供复现步骤、版本、环境、发生时间和影响范围；如有临时规避方案我们会同步给客户。"
+            topic = "缺陷问题"
+        elif triage["issue_type"] == "outage":
+            guidance = (
+                "生产不可用、全量客户影响或 SEV1 报告应按 P1 事件处理，先核对状态页、事件负责人记录和近期发布。"
+                "客户回复可以确认正在排查影响，但不要承诺未经确认的恢复时间。"
+            )
+            next_step = "请补充受影响区域、租户、时间窗口、request_id、业务影响和是否所有用户均受影响。"
+            topic = "服务中断问题"
+        else:
+            guidance = (
+                "当前问题需要先澄清产品区域、用户角色、期望结果、实际结果和发生时间，"
+                "再判断是否需要转入专门 runbook。"
+            )
+            next_step = "请补充产品模块、操作路径、截图或日志、发生时间和期望结果。"
+            topic = "通用支持问题"
+
         return (
-            f"您好 {ticket.customer_name}，我们已按 {triage['priority']} 优先级初步排查该 API 401 问题。\n\n"
-            "最可能的原因是 Authorization header 缺失、Bearer token 已过期、API key 无效，"
-            "或 OAuth scope 不足。建议先确认请求是否使用 `Authorization: Bearer <token>`，"
-            "再检查 token 过期时间和所需 scope。请不要通过工单发送原始密钥。\n\n"
+            f"您好 {ticket.customer_name}，我们已按 {triage['priority']} 优先级初步排查该{topic}。\n\n"
+            f"{guidance} 请不要通过工单发送原始密钥、token 或 API key。\n\n"
             f"工具检查摘要：{tool_summary}\n\n"
-            "建议回复客户的下一步：请提供 request_id、发生时间、接口路径，以及是否近期轮换过凭证；"
-            "如果确认 token 已过期，请生成新 token 后用同一个 request_id 重试。\n\n"
+            f"建议回复客户的下一步：{next_step}\n\n"
             f"引用来源：\n{evidence_lines}"
         )
 
@@ -418,21 +504,29 @@ class SupportAgentWorkflow:
         return reply
 
     def _verify(self, draft_reply: str, evidence: List[Evidence], triage: Dict[str, str]) -> Dict[str, object]:
-        has_sources = bool(evidence) and "引用来源" in draft_reply and "[1]" in draft_reply
+        citation_report = self._validate_citations(draft_reply, evidence)
+        top_evidence_score = max((item.score for item in evidence), default=0.0)
+        has_sources = citation_report["passed"]
+        has_confident_evidence = bool(evidence) and top_evidence_score >= self.min_retrieval_confidence
         no_raw_secret_request = "原始密钥" in draft_reply and "不要" in draft_reply
         no_unauthorized_write = "修改客户数据" not in draft_reply
-        passed = has_sources and no_raw_secret_request and no_unauthorized_write
+        passed = has_sources and has_confident_evidence and no_raw_secret_request and no_unauthorized_write
 
         findings = []
         if not has_sources:
-            findings.append("missing_citations")
+            if citation_report["invalid_citations"]:
+                findings.append("invalid_citations")
+            else:
+                findings.append("missing_citations")
+        if evidence and not has_confident_evidence:
+            findings.append("low_confidence_evidence")
         if not no_raw_secret_request:
             findings.append("secret_handling_unclear")
         if not no_unauthorized_write:
             findings.append("unauthorized_write_risk")
 
         if passed:
-            summary = "Verifier passed: reply has citations, avoids raw secrets, and stays within tool policy."
+            summary = "Verifier passed: reply cites retrieved evidence, avoids raw secrets, and stays within tool policy."
         else:
             summary = f"Verifier blocked: {', '.join(findings)}."
 
@@ -441,6 +535,52 @@ class SupportAgentWorkflow:
             "findings": findings,
             "risk_level": triage["risk_level"],
             "summary": summary,
+            "citation_report": citation_report,
+            "top_evidence_score": round(top_evidence_score, 3),
+            "min_retrieval_confidence": self.min_retrieval_confidence,
+        }
+
+    def _validate_citations(self, draft_reply: str, evidence: List[Evidence]) -> Dict[str, object]:
+        evidence_by_index = {
+            index: (item.title.strip(), item.uri.strip(), item.chunk_id)
+            for index, item in enumerate(evidence, start=1)
+        }
+        citation_lines = list(CITATION_RE.finditer(draft_reply))
+        bracket_numbers = {int(match) for match in re.findall(r"\[(\d+)\]", draft_reply)}
+        cited_evidence_ids: List[str] = []
+        invalid_citations: List[str] = []
+
+        if "引用来源" not in draft_reply or not citation_lines:
+            return {
+                "passed": False,
+                "citation_count": 0,
+                "cited_evidence_ids": [],
+                "invalid_citations": [],
+            }
+
+        for match in citation_lines:
+            index = int(match.group(1))
+            title = match.group(2).strip()
+            uri = match.group(3).strip()
+            expected = evidence_by_index.get(index)
+            if expected is None:
+                invalid_citations.append(f"[{index}] {title} - {uri}")
+                continue
+            expected_title, expected_uri, chunk_id = expected
+            if title != expected_title or uri != expected_uri:
+                invalid_citations.append(f"[{index}] {title} - {uri}")
+                continue
+            cited_evidence_ids.append(chunk_id)
+
+        for index in bracket_numbers:
+            if index not in evidence_by_index:
+                invalid_citations.append(f"[{index}]")
+
+        return {
+            "passed": bool(cited_evidence_ids) and not invalid_citations,
+            "citation_count": len(cited_evidence_ids),
+            "cited_evidence_ids": cited_evidence_ids,
+            "invalid_citations": sorted(set(invalid_citations)),
         }
 
     def _record_step(

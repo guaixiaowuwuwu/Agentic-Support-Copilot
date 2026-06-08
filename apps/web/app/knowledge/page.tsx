@@ -101,6 +101,7 @@ export default async function KnowledgePage() {
                 <tr>
                   <th>{dict.knowledge.tableTitle}</th>
                   <th>{dict.knowledge.tableSource}</th>
+                  <th>{dict.knowledge.metadata}</th>
                   <th>{dict.knowledge.sourceUri}</th>
                   <th>{dict.knowledge.tableChunks}</th>
                   <th>{dict.knowledge.tableEmbedding}</th>
@@ -128,6 +129,20 @@ export default async function KnowledgePage() {
                         </details>
                       </td>
                       <td>{document.source_type}</td>
+                      <td>
+                        <span className="muted-line">
+                          {dict.knowledge.productLine}: {document.product_line || "-"}
+                        </span>
+                        <span className="muted-line">
+                          {dict.knowledge.version}: {document.version || "-"}
+                        </span>
+                        <span className="muted-line">
+                          {dict.knowledge.requiredPermissions}: {(document.required_permissions ?? []).join(", ") || "-"}
+                        </span>
+                        <span className="muted-line">
+                          {dict.knowledge.sourceSystem}: {document.source_system || "-"}
+                        </span>
+                      </td>
                       <td className="uri-cell">{document.uri}</td>
                       <td>
                         {dict.knowledge.embeddedChunks

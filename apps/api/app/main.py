@@ -26,6 +26,7 @@ from .auth import (
     resolve_tenant,
 )
 from .graph import WORKFLOW_NODES, graph_engine_name
+from .knowledge import embedding_provider_status_from_env
 from .llm import create_chat_client_from_env, llm_status_from_env
 from .models import AuditLog, Document, Ticket, to_dict
 from .observability import configure_logging, configure_tracing, log_event, set_span_attributes, telemetry_span
@@ -216,6 +217,12 @@ def knowledge_document_response(document: Document, *, include_chunks: bool = Fa
                 "uri": chunk.uri,
                 "content": chunk.content,
                 "chunk_index": chunk.chunk_index,
+                "product_line": chunk.product_line,
+                "version": chunk.version,
+                "required_permissions": chunk.required_permissions,
+                "valid_from": chunk.valid_from,
+                "valid_until": chunk.valid_until,
+                "source_system": chunk.source_system,
                 "embedding_status": "embedded" if chunk.embedding else "pending",
             }
             for chunk in chunks
@@ -242,6 +249,7 @@ def health() -> dict:
         "graph_engine": graph_engine_name(),
         "workflow_nodes": WORKFLOW_NODES,
         "llm": llm_status_from_env(),
+        "embeddings": embedding_provider_status_from_env(),
         "tools": {
             "allowed": sorted(workflow.tools.allowed_tools),
             "configured_backends": workflow.tools.configured_backends(),
@@ -452,6 +460,16 @@ def create_document(payload: CreateDocumentRequest, principal: Principal = Depen
             source_type=payload.source_type,
             uri=payload.uri,
             content=payload.content,
+            product_line=payload.product_line or None,
+            version=payload.version or None,
+            required_permissions=[
+                permission.strip().lower()
+                for permission in payload.required_permissions
+                if permission.strip()
+            ],
+            valid_from=payload.valid_from or None,
+            valid_until=payload.valid_until or None,
+            source_system=payload.source_system or None,
         ),
         embed=False,
     )
@@ -465,6 +483,12 @@ def create_document(payload: CreateDocumentRequest, principal: Principal = Depen
             "tenant_id": document.tenant_id,
             "source_type": document.source_type,
             "uri": document.uri,
+            "product_line": document.product_line,
+            "version": document.version,
+            "required_permissions": document.required_permissions,
+            "valid_from": document.valid_from,
+            "valid_until": document.valid_until,
+            "source_system": document.source_system,
             "chunk_count": response["chunk_count"],
             "embedding_status": response["embedding_status"],
         },
@@ -599,6 +623,7 @@ def get_admin_config(principal: Principal = Depends(get_current_principal)) -> d
         "store": os.getenv("SUPPORT_COPILOT_STORE", "postgres"),
         "auth": auth_status_from_env(),
         "llm": llm_status_from_env(),
+        "embeddings": embedding_provider_status_from_env(),
         "tools": {
             "allowed": sorted(workflow.tools.allowed_tools),
             "configured_backends": workflow.tools.configured_backends(),

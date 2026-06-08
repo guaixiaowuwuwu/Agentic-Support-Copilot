@@ -14,7 +14,7 @@ API_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(API_ROOT))
 
 from app.agents import SupportAgentWorkflow
-from app.knowledge import EMBEDDING_DIMENSIONS, KeywordRetriever, VectorRetriever
+from app.knowledge import EMBEDDING_DIMENSIONS, KeywordRetriever, RetrievalFilters, VectorRetriever
 from app.llm import LLMError
 from app.models import Document, Evidence, Ticket
 from app.store import InMemoryStore
@@ -273,6 +273,178 @@ class SupportWorkflowTest(unittest.TestCase):
 
         self.assertTrue(evidence)
         self.assertTrue(all("globex" not in item.uri for item in evidence))
+
+    def test_hybrid_retrieval_respects_metadata_permissions_and_validity(self) -> None:
+        store = InMemoryStore(seed=False)
+        store.add_document(
+            Document(
+                tenant_id="acme",
+                title="Active API 401 Runbook",
+                source_type="runbook",
+                uri="kb://acme/api-active",
+                product_line="api",
+                version="v1",
+                required_permissions=["support_agent"],
+                valid_until="2035-01-01T00:00:00+00:00",
+                source_system="confluence",
+                content="API 401 responses require checking bearer token expiry and OAuth scopes.",
+            )
+        )
+        store.add_document(
+            Document(
+                tenant_id="acme",
+                title="Expired API 401 Runbook",
+                source_type="runbook",
+                uri="kb://acme/api-expired",
+                product_line="api",
+                version="v1",
+                required_permissions=["support_agent"],
+                valid_until="2020-01-01T00:00:00+00:00",
+                source_system="confluence",
+                content="Expired guidance for API 401 responses.",
+            )
+        )
+        store.add_document(
+            Document(
+                tenant_id="acme",
+                title="Restricted API 401 Runbook",
+                source_type="runbook",
+                uri="kb://acme/api-restricted",
+                product_line="api",
+                version="v1",
+                required_permissions=["admin"],
+                valid_until="2035-01-01T00:00:00+00:00",
+                source_system="confluence",
+                content="Admin-only API 401 incident notes.",
+            )
+        )
+        workflow = SupportAgentWorkflow(store)
+
+        evidence = workflow.retriever.search(
+            "acme",
+            "API 401 bearer token OAuth scope",
+            store.list_chunks(),
+            filters=RetrievalFilters(
+                product_line="api",
+                version="v1",
+                permissions=("support_agent",),
+                as_of="2026-06-08T00:00:00+00:00",
+            ),
+        )
+
+        self.assertTrue(evidence)
+        self.assertEqual(evidence[0].uri, "kb://acme/api-active")
+        self.assertTrue(all(item.uri != "kb://acme/api-expired" for item in evidence))
+        self.assertTrue(all(item.uri != "kb://acme/api-restricted" for item in evidence))
+        self.assertIn(evidence[0].retrieval_mode, {"hybrid", "keyword", "vector"})
+
+    def test_verifier_blocks_citations_not_backed_by_evidence(self) -> None:
+        workflow = SupportAgentWorkflow(InMemoryStore(seed=False))
+        report = workflow._verify(
+            "您好，请不要通过工单发送原始密钥。\n\n引用来源：\n[1] Fabricated Runbook - kb://fake",
+            [
+                Evidence(
+                    chunk_id="chunk-1",
+                    document_id="doc-1",
+                    title="Actual Runbook",
+                    uri="kb://actual",
+                    excerpt="Actual evidence.",
+                    score=0.92,
+                )
+            ],
+            {"risk_level": "medium"},
+        )
+
+        self.assertFalse(report["passed"])
+        self.assertIn("invalid_citations", report["findings"])
+        self.assertEqual(report["citation_report"]["citation_count"], 0)
+
+    def test_fixed_rag_eval_set_records_quality_metrics(self) -> None:
+        store = InMemoryStore(seed=True)
+        workflow = SupportAgentWorkflow(store)
+        cases = [
+            {
+                "name": "401",
+                "subject": "API returns 401",
+                "description": "Customer receives 401 Unauthorized when using Bearer token syntax. request_id=req_eval_401",
+                "expected_uri": "kb://api/authentication-runbook",
+            },
+            {
+                "name": "billing",
+                "subject": "Billing invoice mismatch",
+                "description": "Customer disputes invoice line items, proration, tax settings, and payment status.",
+                "expected_uri": "kb://billing/invoice-runbook",
+            },
+            {
+                "name": "bug",
+                "subject": "Checkout bug after deploy",
+                "description": "Customer reports a reproducible bug with affected version, expected behavior, and actual behavior.",
+                "expected_uri": "kb://platform/bug-triage",
+            },
+            {
+                "name": "outage",
+                "subject": "Production down outage",
+                "description": "All customers see an outage in production. This is a SEV1 incident with business impact.",
+                "expected_uri": "kb://platform/outage-communications",
+            },
+            {
+                "name": "general",
+                "subject": "General support question",
+                "description": "Customer needs general help and asks which product area owns the support request.",
+                "expected_uri": "kb://support/general-intake",
+            },
+        ]
+
+        eval_rows = []
+        for case in cases:
+            ticket = store.create_ticket(
+                Ticket(
+                    tenant_id="acme",
+                    customer_name=f"{case['name'].title()} Customer",
+                    channel="email",
+                    subject=case["subject"],
+                    description=case["description"],
+                )
+            )
+            run = workflow.start_run(ticket.id)
+            eval_rows.append(
+                {
+                    "name": case["name"],
+                    "hit": any(item.uri == case["expected_uri"] for item in run.evidence),
+                    "citation_accurate": bool(run.verifier_report["citation_report"]["passed"]),
+                    "tenant_isolated": all("globex" not in item.uri.lower() for item in run.evidence),
+                    "top_score": run.verifier_report["top_evidence_score"],
+                }
+            )
+
+        no_evidence_store = InMemoryStore(seed=False)
+        no_evidence_workflow = SupportAgentWorkflow(no_evidence_store)
+        no_evidence_ticket = no_evidence_store.create_ticket(
+            Ticket(
+                tenant_id="acme",
+                customer_name="No Evidence Customer",
+                channel="email",
+                subject="Unmapped private integration",
+                description="Customer asks about frobnicate lattice telemetry with no matching knowledge document.",
+            )
+        )
+        no_evidence_run = no_evidence_workflow.start_run(no_evidence_ticket.id)
+        no_evidence_approval = no_evidence_store.get_approval(no_evidence_run.approval_id or "")
+
+        metrics = {
+            "hit_rate": sum(1 for row in eval_rows if row["hit"]) / len(eval_rows),
+            "citation_accuracy": sum(1 for row in eval_rows if row["citation_accurate"]) / len(eval_rows),
+            "no_evidence_block_rate": 1.0
+            if no_evidence_approval.action_type == "manual_review"
+            and not no_evidence_run.verifier_report["passed"]
+            else 0.0,
+            "tenant_isolation_passed": all(row["tenant_isolated"] for row in eval_rows),
+        }
+
+        self.assertEqual(metrics["hit_rate"], 1.0, eval_rows)
+        self.assertEqual(metrics["citation_accuracy"], 1.0, eval_rows)
+        self.assertEqual(metrics["no_evidence_block_rate"], 1.0)
+        self.assertTrue(metrics["tenant_isolation_passed"], eval_rows)
 
     def test_verifier_still_blocks_unauthorized_write_risk(self) -> None:
         workflow = SupportAgentWorkflow(InMemoryStore(seed=False))
