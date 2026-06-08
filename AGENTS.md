@@ -192,6 +192,40 @@ rm -rf apps/web/.next
 npm --workspace apps/web run dev -- --hostname 127.0.0.1 --port 3000
 ```
 
+## GitHub 推送注意
+
+当前仓库远端是：
+
+```bash
+git@github.com:guaixiaowuwuwu/Agentic-Support-Copilot.git
+```
+
+如果标准 SSH 22 端口推送失败并出现类似下面的错误：
+
+```text
+Connection closed by 198.18.0.29 port 22
+fatal: Could not read from remote repository.
+```
+
+不要反复重试 22 端口。改用 GitHub SSH over 443：
+
+```bash
+git push ssh://git@ssh.github.com:443/guaixiaowuwuwu/Agentic-Support-Copilot.git main
+```
+
+如果首次使用 443 端口遇到 host key 校验问题，先核对 GitHub 官方 ED25519 指纹：
+
+```text
+SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU
+```
+
+可用下面命令查看本机连接到的指纹；确认一致后再加入 `known_hosts`：
+
+```bash
+ssh-keyscan -p 443 -t ed25519 ssh.github.com 2>/dev/null | ssh-keygen -lf -
+ssh-keyscan -p 443 -t ed25519 ssh.github.com 2>/dev/null >> ~/.ssh/known_hosts
+```
+
 ## 开发约定
 
 - 保持 MVP 的安全默认：客户可见回复必须经过人工审批。
