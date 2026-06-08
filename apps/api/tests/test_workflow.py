@@ -13,9 +13,9 @@ from urllib.error import URLError
 API_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(API_ROOT))
 
-from app.agents import SupportAgentWorkflow
+from app.agents import PromptConfig, SupportAgentWorkflow
 from app.knowledge import EMBEDDING_DIMENSIONS, KeywordRetriever, RetrievalFilters, VectorRetriever
-from app.llm import LLMError
+from app.llm import LLMError, LLMSettings, OpenAICompatibleChatClient
 from app.models import Document, Evidence, Ticket
 from app.store import InMemoryStore
 from app.tools import (
@@ -29,8 +29,9 @@ from app.tools import (
 
 
 class FakeChatClient:
-    def __init__(self, reply: str) -> None:
+    def __init__(self, reply: str, model: str = "fake-chat-model") -> None:
         self.reply = reply
+        self.model = model
         self.messages: Sequence[Dict[str, str]] = []
 
     def complete(
@@ -163,6 +164,45 @@ class SupportWorkflowTest(unittest.TestCase):
         self.assertIn("模型生成的草稿", approval.proposed_reply)
         self.assertEqual(chat_client.messages[0]["role"], "system")
 
+    def test_prompt_policies_are_configurable_and_audited(self) -> None:
+        store = InMemoryStore(seed=True)
+        chat_client = FakeChatClient(
+            "您好 Alice，自定义策略下的草稿会先检查 Bearer token。请不要通过工单发送原始密钥。",
+            model="policy-test-model",
+        )
+        workflow = SupportAgentWorkflow(
+            store,
+            chat_client=chat_client,
+            prompt_config=PromptConfig(
+                system_prompt="SYSTEM: private support reply generator",
+                reply_policy="REPLY POLICY: no raw credentials and no write commitments",
+                citation_policy="CITATION POLICY: every source must be traceable",
+                prompt_version="regression-v1",
+            ),
+        )
+        ticket = store.create_ticket(
+            Ticket(
+                tenant_id="acme",
+                customer_name="Alice",
+                channel="email",
+                subject="API 报 401",
+                description="客户说 API 报 401。token=super-secret-value",
+            )
+        )
+
+        run = workflow.start_run(ticket.id)
+
+        system_message = chat_client.messages[0]["content"]
+        self.assertIn("SYSTEM: private support reply generator", system_message)
+        self.assertIn("REPLY POLICY: no raw credentials and no write commitments", system_message)
+        self.assertIn("CITATION POLICY: every source must be traceable", system_message)
+        llm_audits = [audit for audit in store.list_audit_logs("acme") if audit.action == "llm_call_completed"]
+        self.assertEqual(len(llm_audits), 1)
+        self.assertEqual(llm_audits[0].metadata["model"], "policy-test-model")
+        self.assertEqual(llm_audits[0].metadata["prompt_version"], "regression-v1")
+        self.assertNotIn("super-secret-value", str(llm_audits[0].metadata))
+        self.assertTrue(run.verifier_report["passed"])
+
     def test_llm_reply_is_normalized_for_required_guardrails(self) -> None:
         store = InMemoryStore(seed=True)
         workflow = SupportAgentWorkflow(store, chat_client=FakeChatClient("您好 Alice，模型草稿建议先检查认证配置。"))
@@ -182,6 +222,58 @@ class SupportWorkflowTest(unittest.TestCase):
         self.assertTrue(run.verifier_report["passed"])
         self.assertIn("请不要通过工单发送原始密钥", approval.proposed_reply)
         self.assertIn("引用来源", approval.proposed_reply)
+
+    def test_prompt_regression_blocks_raw_secret_request_from_llm(self) -> None:
+        store = InMemoryStore(seed=True)
+        workflow = SupportAgentWorkflow(
+            store,
+            chat_client=FakeChatClient(
+                "您好 Alice，请把你的 API key、token 和原始密钥直接发送到工单里方便我们排查。\n\n"
+                "引用来源：\n[1] API Authentication Runbook - kb://api/authentication-runbook"
+            ),
+        )
+        ticket = store.create_ticket(
+            Ticket(
+                tenant_id="acme",
+                customer_name="Alice",
+                channel="email",
+                subject="API 报 401",
+                description="客户说 API 报 401，帮我排查并回复。request_id=req_123",
+            )
+        )
+
+        run = workflow.start_run(ticket.id)
+        approval = store.get_approval(run.approval_id or "")
+
+        self.assertTrue(run.verifier_report["passed"])
+        self.assertNotIn("直接发送到工单", approval.proposed_reply)
+        self.assertIn("请不要通过工单发送原始密钥", approval.proposed_reply)
+
+    def test_prompt_regression_blocks_unauthorized_write_promise_from_llm(self) -> None:
+        store = InMemoryStore(seed=True)
+        workflow = SupportAgentWorkflow(
+            store,
+            chat_client=FakeChatClient(
+                "您好 Alice，我们已经为你重置 token 并修改客户数据，稍后会关闭工单。\n\n"
+                "引用来源：\n[1] API Authentication Runbook - kb://api/authentication-runbook"
+            ),
+        )
+        ticket = store.create_ticket(
+            Ticket(
+                tenant_id="acme",
+                customer_name="Alice",
+                channel="email",
+                subject="API 报 401",
+                description="客户说 API 报 401，帮我排查并回复。request_id=req_123",
+            )
+        )
+
+        run = workflow.start_run(ticket.id)
+        approval = store.get_approval(run.approval_id or "")
+
+        self.assertTrue(run.verifier_report["passed"])
+        self.assertNotIn("已经为你重置", approval.proposed_reply)
+        self.assertNotIn("修改客户数据", approval.proposed_reply)
 
     def test_llm_failure_falls_back_to_template_reply(self) -> None:
         store = InMemoryStore(seed=True)
@@ -222,6 +314,28 @@ class SupportWorkflowTest(unittest.TestCase):
         self.assertFalse(run.verifier_report["passed"])
         self.assertEqual(approval.action_type, "manual_review")
         self.assertIn("missing_citations", run.verifier_report["findings"])
+
+    def test_high_risk_ticket_is_forced_to_manual_review(self) -> None:
+        store = InMemoryStore(seed=True)
+        workflow = SupportAgentWorkflow(store)
+        ticket = store.create_ticket(
+            Ticket(
+                tenant_id="acme",
+                customer_name="Ops Lead",
+                channel="email",
+                subject="Production down outage",
+                description="All customers see an outage in production. This is a SEV1 incident.",
+            )
+        )
+
+        run = workflow.start_run(ticket.id)
+        approval = store.get_approval(run.approval_id or "")
+
+        self.assertEqual(run.triage["risk_level"], "high")
+        self.assertTrue(run.verifier_report["passed"])
+        self.assertTrue(run.verifier_report["manual_review_required"])
+        self.assertIn("high_risk_manual_review", run.verifier_report["findings"])
+        self.assertEqual(approval.action_type, "manual_review")
 
     def test_retrieval_is_tenant_scoped(self) -> None:
         store = InMemoryStore(seed=True)
@@ -767,6 +881,61 @@ class SupportWorkflowTest(unittest.TestCase):
         self.assertIn("acme/api#42", output)
         self.assertNotIn("github-secret-token", output)
         self.assertNotIn("network-secret", output)
+
+    def test_llm_client_retries_transient_failures_and_records_metadata(self) -> None:
+        attempts = []
+
+        def fake_urlopen(request, timeout):
+            attempts.append((request.full_url, timeout))
+            if len(attempts) == 1:
+                raise URLError("temporary timeout token=network-secret")
+            return FakeHTTPResponse({"choices": [{"message": {"content": "ok"}}]})
+
+        client = OpenAICompatibleChatClient(
+            LLMSettings(
+                base_url="https://llm.internal/v1",
+                model="support-model",
+                api_key="llm-secret-key",
+                timeout_seconds=2,
+                enabled=True,
+                retry_count=1,
+                retry_backoff_seconds=0,
+                rate_limit_per_minute=60,
+            )
+        )
+
+        with patch("app.llm.urllib.request.urlopen", side_effect=fake_urlopen):
+            output = client.complete([{"role": "user", "content": "hello"}])
+
+        self.assertEqual(output, "ok")
+        self.assertEqual(len(attempts), 2)
+        self.assertEqual(attempts[0][1], 2)
+        self.assertEqual(client.last_call_metadata["model"], "support-model")
+        self.assertEqual(client.last_call_metadata["attempts"], 2)
+        self.assertNotIn("network-secret", str(client.last_call_metadata))
+        self.assertNotIn("llm-secret-key", str(client.last_call_metadata))
+
+    def test_llm_client_enforces_fast_rate_limit(self) -> None:
+        client = OpenAICompatibleChatClient(
+            LLMSettings(
+                base_url="https://llm.internal/v1",
+                model="support-model",
+                api_key="llm-secret-key",
+                timeout_seconds=2,
+                enabled=True,
+                retry_count=0,
+                retry_backoff_seconds=0,
+                rate_limit_per_minute=1,
+            )
+        )
+
+        with patch(
+            "app.llm.urllib.request.urlopen",
+            return_value=FakeHTTPResponse({"choices": [{"message": {"content": "ok"}}]}),
+        ):
+            self.assertEqual(client.complete([{"role": "user", "content": "hello"}]), "ok")
+            with self.assertRaises(LLMError):
+                client.complete([{"role": "user", "content": "hello again"}])
 
     def test_config_status_blocks_write_tools_without_exposing_backend_secrets(self) -> None:
         registry = ToolRegistry(

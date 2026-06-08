@@ -1,20 +1,151 @@
 from __future__ import annotations
 
+import os
 import re
 import time
 from contextlib import contextmanager
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 from .knowledge import RetrievalFilters, Retriever, create_default_retriever
 from .llm import ChatClient, LLMError
 from .models import AgentRun, AgentStep, Approval, AuditLog, Evidence, Ticket, ToolCall
 from .observability import log_event, set_span_attributes, telemetry_span
-from .security import clip_text, redact_secrets
+from .security import clip_text, redact_secrets, sanitize_for_log
 from .store import Store
 from .time_utils import utc_now
 from .tools import ToolPermissionError, ToolRegistry
 
 CITATION_RE = re.compile(r"^\s*\[(\d+)\]\s*(.*?)\s*-\s*(\S+)\s*$", re.MULTILINE)
+DEFAULT_SYSTEM_PROMPT = (
+    "你是企业客服协作系统的回复草稿生成器。只根据给定工单、检索证据和工具摘要写中文回复。"
+)
+DEFAULT_REPLY_POLICY = (
+    "回复必须适合提交给人工审批；不要编造证据；不要要求客户发送原始密钥、token 或 API key；"
+    "不要承诺已经执行、即将执行或可以执行未经授权的写操作。"
+)
+DEFAULT_CITATION_POLICY = (
+    "末尾必须包含“引用来源：”。引用格式严格使用“[编号] 标题 - URI”，且编号必须对应给定证据。"
+)
+SECRET_SAFETY_LINE = "请不要通过工单发送原始密钥、token 或 API key。"
+SECRET_TERMS = (
+    "原始密钥",
+    "密钥",
+    "api key",
+    "api_key",
+    "apikey",
+    "token",
+    "令牌",
+    "access token",
+    "bearer token",
+)
+SECRET_REQUEST_TERMS = (
+    "提供",
+    "发送",
+    "上传",
+    "粘贴",
+    "贴出",
+    "分享",
+    "把",
+    "send",
+    "provide",
+    "share",
+    "paste",
+    "upload",
+)
+NEGATION_TERMS = ("不要", "请勿", "不能", "不得", "避免", "do not", "don't", "never", "without")
+WRITE_OPERATION_TERMS = (
+    "修改客户数据",
+    "修改",
+    "重置",
+    "删除",
+    "更新配置",
+    "创建",
+    "关闭工单",
+    "关闭",
+    "退款",
+    "贷项",
+    "合同变更",
+    "变更合同",
+    "禁用",
+    "启用",
+    "轮换密钥",
+    "reset",
+    "delete",
+    "update",
+    "create",
+    "close",
+    "refund",
+    "disable",
+    "enable",
+    "rotate",
+)
+WRITE_COMMITMENT_TERMS = (
+    "我们已经",
+    "我已经",
+    "已为",
+    "已经为",
+    "将为",
+    "会为",
+    "马上",
+    "立即",
+    "直接",
+    "请",
+    "we have",
+    "i have",
+    "we will",
+    "i will",
+)
+WRITE_SAFE_TERMS = (
+    "不要承诺",
+    "不能承诺",
+    "不得承诺",
+    "需要审批",
+    "需要人工审批",
+    "需要转交",
+    "转交",
+    "未经确认",
+    "without approval",
+    "requires approval",
+)
+
+
+def _configured_text(name: str, default: str) -> str:
+    path = os.getenv(f"{name}_FILE", "").strip()
+    if path:
+        try:
+            return Path(path).read_text(encoding="utf-8").strip() or default
+        except OSError:
+            return default
+    return os.getenv(name, "").strip() or default
+
+
+@dataclass(frozen=True)
+class PromptConfig:
+    system_prompt: str = DEFAULT_SYSTEM_PROMPT
+    reply_policy: str = DEFAULT_REPLY_POLICY
+    citation_policy: str = DEFAULT_CITATION_POLICY
+    citation_heading: str = "引用来源："
+    prompt_version: str = "support-copilot-v1"
+
+    @classmethod
+    def from_env(cls) -> "PromptConfig":
+        return cls(
+            system_prompt=_configured_text("SUPPORT_COPILOT_LLM_SYSTEM_PROMPT", DEFAULT_SYSTEM_PROMPT),
+            reply_policy=_configured_text("SUPPORT_COPILOT_REPLY_POLICY", DEFAULT_REPLY_POLICY),
+            citation_policy=_configured_text("SUPPORT_COPILOT_CITATION_POLICY", DEFAULT_CITATION_POLICY),
+            citation_heading=os.getenv("SUPPORT_COPILOT_CITATION_HEADING", "引用来源：").strip() or "引用来源：",
+            prompt_version=os.getenv("SUPPORT_COPILOT_PROMPT_VERSION", "support-copilot-v1").strip()
+            or "support-copilot-v1",
+        )
+
+    def system_message(self) -> str:
+        return (
+            f"{self.system_prompt}\n\n"
+            f"回复策略：{self.reply_policy}\n\n"
+            f"引用策略：{self.citation_policy}"
+        )
 
 
 @contextmanager
@@ -38,6 +169,7 @@ class SupportAgentWorkflow:
         retriever: Optional[Retriever] = None,
         tools: Optional[ToolRegistry] = None,
         chat_client: Optional[ChatClient] = None,
+        prompt_config: Optional[PromptConfig] = None,
         min_retrieval_confidence: float = 0.18,
     ) -> None:
         self.store = store
@@ -50,6 +182,7 @@ class SupportAgentWorkflow:
             self.retriever = create_default_retriever(store)
         self.tools = tools or ToolRegistry()
         self.chat_client = chat_client
+        self.prompt_config = prompt_config or PromptConfig.from_env()
         self.min_retrieval_confidence = min_retrieval_confidence
 
     def start_run(self, ticket_id: str) -> AgentRun:
@@ -126,18 +259,20 @@ class SupportAgentWorkflow:
             self._record_step(
                 run,
                 "verifier",
-                "success" if verifier_report["passed"] else "blocked",
+                "blocked" if verifier_report.get("manual_review_required") else "success",
                 verifier_report["summary"],
                 draft_reply,
                 evidence_ids=[item.chunk_id for item in evidence],
             )
 
-            action_type = "send_reply" if verifier_report["passed"] else "manual_review"
-            approval_reason = (
-                "Customer-facing reply requires approval."
-                if verifier_report["passed"]
-                else "Verifier requires a human to review missing evidence or policy concerns."
-            )
+            manual_review_required = bool(verifier_report.get("manual_review_required"))
+            action_type = "manual_review" if manual_review_required else "send_reply"
+            if not verifier_report["passed"]:
+                approval_reason = "Verifier requires a human to review missing evidence or policy concerns."
+            elif manual_review_required:
+                approval_reason = "High-risk workflow requires manual review before any customer-visible reply."
+            else:
+                approval_reason = "Customer-facing reply requires approval."
             approval = self.store.create_approval(
                 Approval(
                     run_id=run.id,
@@ -335,6 +470,8 @@ class SupportAgentWorkflow:
         if not evidence or self.chat_client is None:
             return fallback_reply
 
+        messages = self._reply_messages(ticket, triage, evidence, tool_calls)
+        llm_reply = ""
         try:
             with telemetry_span(
                 "llm.call",
@@ -346,11 +483,14 @@ class SupportAgentWorkflow:
                 },
             ) as span:
                 llm_reply = self.chat_client.complete(
-                    self._reply_messages(ticket, triage, evidence, tool_calls),
+                    messages,
                     temperature=0.2,
                     max_tokens=700,
                 )
-                set_span_attributes(span, {"llm.status": "success"})
+                normalized_reply = self._normalize_llm_reply(llm_reply, evidence, fallback_reply)
+                policy_fallback = normalized_reply == fallback_reply and llm_reply.strip() != fallback_reply.strip()
+                llm_status = "policy_fallback" if policy_fallback else "success"
+                set_span_attributes(span, {"llm.status": llm_status, "llm.model": self._llm_model_name()})
                 log_event(
                     "INFO",
                     "llm_call_completed",
@@ -358,9 +498,19 @@ class SupportAgentWorkflow:
                     trace_id=run.trace_id,
                     correlation_id=run.correlation_id,
                     tenant_id=ticket.tenant_id,
-                    status="success",
+                    status=llm_status,
+                    model=self._llm_model_name(),
                 )
-        except LLMError:
+                self._audit_llm_call(
+                    ticket,
+                    run,
+                    status=llm_status,
+                    messages=messages,
+                    response_text=llm_reply,
+                    fallback_used=policy_fallback,
+                )
+                return normalized_reply
+        except LLMError as exc:
             log_event(
                 "WARNING",
                 "llm_call_completed",
@@ -369,10 +519,18 @@ class SupportAgentWorkflow:
                 correlation_id=run.correlation_id,
                 tenant_id=ticket.tenant_id,
                 status="failed",
+                model=self._llm_model_name(),
+            )
+            self._audit_llm_call(
+                ticket,
+                run,
+                status="failed",
+                messages=messages,
+                response_text=llm_reply,
+                fallback_used=True,
+                error_summary=str(exc),
             )
             return fallback_reply
-
-        return self._normalize_llm_reply(llm_reply, evidence, fallback_reply)
 
     def _compose_template_reply(
         self,
@@ -439,7 +597,7 @@ class SupportAgentWorkflow:
             f"{guidance} 请不要通过工单发送原始密钥、token 或 API key。\n\n"
             f"工具检查摘要：{tool_summary}\n\n"
             f"建议回复客户的下一步：{next_step}\n\n"
-            f"引用来源：\n{evidence_lines}"
+            f"{self.prompt_config.citation_heading}\n{evidence_lines}"
         )
 
     def _reply_messages(
@@ -462,11 +620,7 @@ class SupportAgentWorkflow:
         return [
             {
                 "role": "system",
-                "content": (
-                    "你是企业客服协作系统的回复草稿生成器。只根据给定工单、检索证据和工具摘要写中文回复。"
-                    "不要编造证据，不要要求客户发送原始密钥、token 或 API key，不要承诺已经修改客户数据。"
-                    "回复必须适合提交给人工审批，末尾必须包含“引用来源：”，引用格式严格使用“[编号] 标题 - URI”。"
-                ),
+                "content": self.prompt_config.system_message(),
             },
             {
                 "role": "user",
@@ -489,56 +643,160 @@ class SupportAgentWorkflow:
         if not reply:
             return fallback_reply
 
-        if "修改客户数据" in reply:
+        if self._contains_raw_secret_request(reply) or self._contains_unauthorized_write_promise(reply):
             return fallback_reply
 
-        if "原始密钥" not in reply or "不要" not in reply:
-            reply = f"{reply}\n\n请不要通过工单发送原始密钥、token 或 API key。"
+        if not self._has_secret_safety_notice(reply):
+            reply = f"{reply}\n\n{SECRET_SAFETY_LINE}"
 
-        if "引用来源" not in reply or "[1]" not in reply:
+        if self.prompt_config.citation_heading not in reply or "[1]" not in reply:
             citation_lines = "\n".join(
                 f"[{index}] {item.title} - {item.uri}" for index, item in enumerate(evidence, start=1)
             )
-            reply = f"{reply}\n\n引用来源：\n{citation_lines}"
+            reply = f"{reply}\n\n{self.prompt_config.citation_heading}\n{citation_lines}"
 
         return reply
 
     def _verify(self, draft_reply: str, evidence: List[Evidence], triage: Dict[str, str]) -> Dict[str, object]:
         citation_report = self._validate_citations(draft_reply, evidence)
         top_evidence_score = max((item.score for item in evidence), default=0.0)
-        has_sources = citation_report["passed"]
         has_confident_evidence = bool(evidence) and top_evidence_score >= self.min_retrieval_confidence
-        no_raw_secret_request = "原始密钥" in draft_reply and "不要" in draft_reply
-        no_unauthorized_write = "修改客户数据" not in draft_reply
-        passed = has_sources and has_confident_evidence and no_raw_secret_request and no_unauthorized_write
+        risk_level = triage.get("risk_level", "unknown")
+        high_risk = risk_level == "high"
 
-        findings = []
-        if not has_sources:
-            if citation_report["invalid_citations"]:
-                findings.append("invalid_citations")
-            else:
-                findings.append("missing_citations")
-        if evidence and not has_confident_evidence:
-            findings.append("low_confidence_evidence")
-        if not no_raw_secret_request:
-            findings.append("secret_handling_unclear")
-        if not no_unauthorized_write:
-            findings.append("unauthorized_write_risk")
+        checks = [
+            self._verifier_check(
+                "citations_traceable",
+                bool(citation_report["passed"]),
+                "invalid_citations" if citation_report["invalid_citations"] else "missing_citations",
+                "Reply citations must exactly match retrieved evidence.",
+                severity="blocker",
+            ),
+            self._verifier_check(
+                "retrieval_confidence",
+                has_confident_evidence,
+                "low_confidence_evidence",
+                "At least one tenant-scoped evidence item must meet retrieval confidence.",
+                severity="blocker",
+            ),
+            self._verifier_check(
+                "raw_secret_request",
+                not self._contains_raw_secret_request(draft_reply),
+                "raw_secret_request",
+                "Reply must not ask the customer to send raw secrets, tokens, or API keys.",
+                severity="blocker",
+            ),
+            self._verifier_check(
+                "secret_safety_notice",
+                self._has_secret_safety_notice(draft_reply),
+                "secret_handling_unclear",
+                "Reply must explicitly tell the customer not to send raw credentials.",
+                severity="blocker",
+            ),
+            self._verifier_check(
+                "unauthorized_write_policy",
+                not self._contains_unauthorized_write_promise(draft_reply),
+                "unauthorized_write_risk",
+                "Reply must not promise or request unauthorized write operations.",
+                severity="blocker",
+            ),
+            self._verifier_check(
+                "high_risk_manual_review",
+                not high_risk,
+                "high_risk_manual_review",
+                "High-risk tickets require manual review even when the draft is policy compliant.",
+                severity="review",
+                blocking=False,
+                manual_review_required=high_risk,
+            ),
+        ]
 
-        if passed:
+        blocking_findings = [
+            check["finding"]
+            for check in checks
+            if check["blocking"] and not check["passed"] and check["finding"]
+        ]
+        review_findings = [
+            check["finding"]
+            for check in checks
+            if check["manual_review_required"] and check["finding"]
+        ]
+        findings = sorted(set(blocking_findings + review_findings))
+        passed = not blocking_findings
+        manual_review_required = bool(review_findings) or not passed
+
+        if passed and manual_review_required:
+            summary = f"Verifier passed with manual review required: {', '.join(review_findings)}."
+        elif passed:
             summary = "Verifier passed: reply cites retrieved evidence, avoids raw secrets, and stays within tool policy."
         else:
-            summary = f"Verifier blocked: {', '.join(findings)}."
+            summary = f"Verifier blocked: {', '.join(blocking_findings)}."
 
         return {
             "passed": passed,
             "findings": findings,
-            "risk_level": triage["risk_level"],
+            "risk_level": risk_level,
             "summary": summary,
+            "checks": checks,
+            "manual_review_required": manual_review_required,
             "citation_report": citation_report,
             "top_evidence_score": round(top_evidence_score, 3),
             "min_retrieval_confidence": self.min_retrieval_confidence,
         }
+
+    def _verifier_check(
+        self,
+        code: str,
+        passed: bool,
+        finding: str,
+        summary: str,
+        *,
+        severity: str,
+        blocking: bool = True,
+        manual_review_required: bool = False,
+    ) -> Dict[str, object]:
+        return {
+            "code": code,
+            "passed": passed,
+            "finding": "" if passed else finding,
+            "severity": severity,
+            "blocking": blocking,
+            "manual_review_required": manual_review_required,
+            "summary": summary,
+        }
+
+    def _contains_raw_secret_request(self, text: str) -> bool:
+        for sentence in self._sentences(text):
+            lowered = sentence.lower()
+            if not any(term in lowered for term in SECRET_TERMS):
+                continue
+            if not any(term in lowered for term in SECRET_REQUEST_TERMS):
+                continue
+            if any(term in lowered for term in NEGATION_TERMS):
+                continue
+            return True
+        return False
+
+    def _has_secret_safety_notice(self, text: str) -> bool:
+        for sentence in self._sentences(text):
+            lowered = sentence.lower()
+            if any(term in lowered for term in SECRET_TERMS) and any(term in lowered for term in NEGATION_TERMS):
+                return True
+        return False
+
+    def _contains_unauthorized_write_promise(self, text: str) -> bool:
+        for sentence in self._sentences(text):
+            lowered = sentence.lower()
+            if any(term in lowered for term in WRITE_SAFE_TERMS):
+                continue
+            if not any(term in lowered for term in WRITE_OPERATION_TERMS):
+                continue
+            if any(term in lowered for term in WRITE_COMMITMENT_TERMS):
+                return True
+        return False
+
+    def _sentences(self, text: str) -> List[str]:
+        return [part.strip() for part in re.split(r"[\n。！？!?；;]+", text) if part.strip()]
 
     def _validate_citations(self, draft_reply: str, evidence: List[Evidence]) -> Dict[str, object]:
         evidence_by_index = {
@@ -550,11 +808,12 @@ class SupportAgentWorkflow:
         cited_evidence_ids: List[str] = []
         invalid_citations: List[str] = []
 
-        if "引用来源" not in draft_reply or not citation_lines:
+        if self.prompt_config.citation_heading not in draft_reply or not citation_lines:
             return {
                 "passed": False,
                 "citation_count": 0,
                 "cited_evidence_ids": [],
+                "sources": [],
                 "invalid_citations": [],
             }
 
@@ -580,6 +839,16 @@ class SupportAgentWorkflow:
             "passed": bool(cited_evidence_ids) and not invalid_citations,
             "citation_count": len(cited_evidence_ids),
             "cited_evidence_ids": cited_evidence_ids,
+            "sources": [
+                {
+                    "evidence_id": item.chunk_id,
+                    "document_id": item.document_id,
+                    "title": item.title,
+                    "uri": item.uri,
+                }
+                for item in evidence
+                if item.chunk_id in cited_evidence_ids
+            ],
             "invalid_citations": sorted(set(invalid_citations)),
         }
 
@@ -700,6 +969,56 @@ class SupportAgentWorkflow:
             tool_name=call.tool_name,
             status=call.status,
         )
+
+    def _audit_llm_call(
+        self,
+        ticket: Ticket,
+        run: AgentRun,
+        *,
+        status: str,
+        messages: List[Dict[str, str]],
+        response_text: str,
+        fallback_used: bool,
+        error_summary: str = "",
+    ) -> None:
+        metadata = {
+            "run_id": run.id,
+            "ticket_id": ticket.id,
+            "trace_id": run.trace_id,
+            "correlation_id": run.correlation_id,
+            "status": status,
+            "model": self._llm_model_name(),
+            "prompt_version": self.prompt_config.prompt_version,
+            "prompt_summary": self._prompt_summary(messages),
+            "response_summary": clip_text(redact_secrets(response_text), 400) if response_text else "",
+            "fallback_used": fallback_used,
+            "error_summary": clip_text(redact_secrets(error_summary), 300) if error_summary else "",
+            "client_metadata": getattr(self.chat_client, "last_call_metadata", {}),
+        }
+        self._audit(
+            ticket.tenant_id,
+            "system",
+            "llm_call_completed",
+            "agent_run",
+            run.id,
+            sanitize_for_log(metadata, string_limit=1000),
+        )
+
+    def _llm_model_name(self) -> str:
+        if self.chat_client is None:
+            return "deterministic_fallback"
+        settings = getattr(self.chat_client, "settings", None)
+        model = getattr(settings, "model", None) or getattr(self.chat_client, "model", None)
+        return str(model or self.chat_client.__class__.__name__)
+
+    def _prompt_summary(self, messages: List[Dict[str, str]]) -> Dict[str, object]:
+        system_message = next((message["content"] for message in messages if message.get("role") == "system"), "")
+        user_message = next((message["content"] for message in messages if message.get("role") == "user"), "")
+        return {
+            "message_count": len(messages),
+            "system_summary": clip_text(redact_secrets(system_message), 400),
+            "user_summary": clip_text(redact_secrets(user_message), 500),
+        }
 
     def _run_metadata(self, run: AgentRun, ticket: Ticket) -> Dict[str, Any]:
         return {

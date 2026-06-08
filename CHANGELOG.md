@@ -2,6 +2,30 @@
 
 > 本日志按每次更新的能力内容分组，不按日期分组。
 
+## LLM 输出可控与结构化校验
+
+### 新增
+- 新增 `PromptConfig`，将 system prompt、reply policy、citation policy、引用标题和 prompt version 从 workflow 硬编码中抽出，并支持通过环境变量或 `*_FILE` 管理长 prompt。
+- 新增 LLM 调用审计记录，记录脱敏后的 prompt 摘要、response 摘要、模型名、prompt version、调用状态、fallback 状态和客户端 metadata。
+- 新增 LLM 客户端 retry、backoff、timeout metadata 和本地每分钟限流；触发失败或限流时 workflow 会继续生成可审批的确定性 fallback 草稿。
+- 新增结构化 verifier checks，覆盖引用可追溯、检索置信度、原始密钥/token/API key 索要风险、密钥安全提示、未授权写操作承诺和高风险人工复核。
+- 新增 prompt regression tests，固定模型越界输出时的可回归行为。
+
+### 变更
+- verifier 的 `passed` 现在表示草稿是否满足阻断性安全规则；`manual_review_required` 单独表示是否必须进入人工复核。
+- 高风险工单即使草稿满足引用和安全策略，也会强制创建 `manual_review` 审批。
+- LLM 输出若索要原始密钥、token 或 API key，或承诺重置、修改、关闭、退款等未授权写操作，会被确定性模板 fallback 替换。
+- 引用校验报告增加可追溯 source map，记录有效引用对应的 evidence chunk、document、title 和 URI。
+- `/api/health` 的 LLM 状态补充 timeout、retry 和 rate limit 非敏感配置。
+- `.env.example` 补齐 LLM retry、backoff、rate limit 和 prompt policy 配置示例。
+
+### 验证
+- 新增测试覆盖 LLM 不索要原始密钥、token 或 API key，不承诺未授权写操作，引用格式稳定且来源可追溯。
+- 新增测试覆盖 LLM 不可用、限流和瞬时失败重试时仍生成可审批 fallback 草稿。
+- 新增测试覆盖高风险场景强制进入 manual review。
+- 后端单元测试通过：`.venv/bin/python -m unittest discover -s apps/api/tests`。
+- diff 格式检查通过：`git diff --check`。
+
 ## 可配置 Embedding 与混合检索质量评测
 
 ### 新增

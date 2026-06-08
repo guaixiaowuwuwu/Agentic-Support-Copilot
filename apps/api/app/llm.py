@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -62,6 +63,26 @@ def _env_bool(name: str) -> Optional[bool]:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _env_int(name: str, fallback: int) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return fallback
+    try:
+        return int(value)
+    except ValueError:
+        return fallback
+
+
+def _env_float(name: str, fallback: float) -> float:
+    value = os.getenv(name)
+    if value is None:
+        return fallback
+    try:
+        return float(value)
+    except ValueError:
+        return fallback
+
+
 def _usable_api_key(api_key: str) -> bool:
     return api_key.strip().lower() not in PLACEHOLDER_API_KEYS
 
@@ -73,6 +94,9 @@ class LLMSettings:
     api_key: str
     timeout_seconds: float
     enabled: bool
+    retry_count: int = 1
+    retry_backoff_seconds: float = 0.2
+    rate_limit_per_minute: int = 60
 
     @classmethod
     def from_env(cls) -> "LLMSettings":
@@ -83,11 +107,25 @@ class LLMSettings:
         )
         model = _env("SUPPORT_COPILOT_LLM_MODEL") or _env("LLM_MODEL")
         api_key = _env("SUPPORT_COPILOT_LLM_API_KEY") or _env("LLM_API_KEY")
-        timeout_raw = _env("SUPPORT_COPILOT_LLM_TIMEOUT_SECONDS") or _env("LLM_TIMEOUT_SECONDS") or "20"
-        try:
-            timeout_seconds = float(timeout_raw)
-        except ValueError:
-            timeout_seconds = 20.0
+        timeout_seconds = _env_float(
+            "SUPPORT_COPILOT_LLM_TIMEOUT_SECONDS",
+            _env_float("LLM_TIMEOUT_SECONDS", 20.0),
+        )
+        retry_count = max(0, _env_int("SUPPORT_COPILOT_LLM_RETRY_COUNT", _env_int("LLM_RETRY_COUNT", 1)))
+        retry_backoff_seconds = max(
+            0.0,
+            _env_float(
+                "SUPPORT_COPILOT_LLM_RETRY_BACKOFF_SECONDS",
+                _env_float("LLM_RETRY_BACKOFF_SECONDS", 0.2),
+            ),
+        )
+        rate_limit_per_minute = max(
+            0,
+            _env_int(
+                "SUPPORT_COPILOT_LLM_RATE_LIMIT_PER_MINUTE",
+                _env_int("LLM_RATE_LIMIT_PER_MINUTE", 60),
+            ),
+        )
 
         explicit_enabled = _env_bool("SUPPORT_COPILOT_LLM_ENABLED")
         if explicit_enabled is None:
@@ -104,6 +142,9 @@ class LLMSettings:
             api_key=api_key,
             timeout_seconds=timeout_seconds,
             enabled=enabled,
+            retry_count=retry_count,
+            retry_backoff_seconds=retry_backoff_seconds,
+            rate_limit_per_minute=rate_limit_per_minute,
         )
 
     def chat_completions_url(self) -> str:
@@ -115,6 +156,8 @@ class LLMSettings:
 class OpenAICompatibleChatClient:
     def __init__(self, settings: LLMSettings) -> None:
         self.settings = settings
+        self.last_call_metadata: Dict[str, object] = {}
+        self._request_timestamps: list[float] = []
 
     def complete(
         self,
@@ -123,6 +166,7 @@ class OpenAICompatibleChatClient:
         temperature: float = 0.2,
         max_tokens: int = 700,
     ) -> str:
+        self._reserve_rate_limit()
         payload = {
             "model": self.settings.model,
             "messages": list(messages),
@@ -140,17 +184,49 @@ class OpenAICompatibleChatClient:
             headers=headers,
             method="POST",
         )
-        try:
-            with urllib.request.urlopen(request, timeout=self.settings.timeout_seconds) as response:
-                data = json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            detail = redact_secrets(exc.read().decode("utf-8", errors="replace"))[:300]
-            raise LLMError(f"LLM API returned HTTP {exc.code}: {detail}") from exc
-        except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
-            raise LLMError(f"LLM API request failed: {redact_secrets(exc)}") from exc
+        started = time.perf_counter()
+        attempts = 0
+        retryable_status_codes = {408, 409, 425, 429, 500, 502, 503, 504}
+        last_error = ""
 
+        for attempt in range(self.settings.retry_count + 1):
+            attempts = attempt + 1
+            try:
+                with urllib.request.urlopen(request, timeout=self.settings.timeout_seconds) as response:
+                    data = json.loads(response.read().decode("utf-8"))
+                text = self._extract_text(data)
+                self._record_metadata("success", attempts, started)
+                return text
+            except urllib.error.HTTPError as exc:
+                if exc.code in retryable_status_codes and attempt < self.settings.retry_count:
+                    last_error = f"HTTP {exc.code}"
+                    self._sleep_before_retry(attempt)
+                    continue
+                detail = redact_secrets(exc.read().decode("utf-8", errors="replace"))[:300]
+                self._record_metadata("failed", attempts, started, f"HTTP {exc.code}")
+                raise LLMError(f"LLM API returned HTTP {exc.code}: {detail}") from exc
+            except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+                last_error = redact_secrets(exc)
+                if attempt < self.settings.retry_count:
+                    self._sleep_before_retry(attempt)
+                    continue
+                self._record_metadata("failed", attempts, started, str(last_error))
+                raise LLMError(f"LLM API request failed: {last_error}") from exc
+            except LLMError as exc:
+                last_error = str(exc)
+                if attempt < self.settings.retry_count:
+                    self._sleep_before_retry(attempt)
+                    continue
+                self._record_metadata("failed", attempts, started, last_error)
+                raise
+
+        self._record_metadata("failed", attempts, started, last_error)
+        raise LLMError(f"LLM API request failed: {last_error}")
+
+    def _extract_text(self, data: Dict[str, object]) -> str:
         try:
-            choice = data["choices"][0]
+            choices = data["choices"]
+            choice = choices[0] if isinstance(choices, list) else None
         except (KeyError, IndexError, TypeError) as exc:
             raise LLMError("LLM API response did not include choices") from exc
 
@@ -160,6 +236,45 @@ class OpenAICompatibleChatClient:
         if isinstance(choice, dict) and isinstance(choice.get("text"), str):
             return choice["text"]
         raise LLMError("LLM API response did not include text content")
+
+    def _reserve_rate_limit(self) -> None:
+        limit = self.settings.rate_limit_per_minute
+        if limit <= 0:
+            return
+        now = time.monotonic()
+        self._request_timestamps = [item for item in self._request_timestamps if now - item < 60]
+        if len(self._request_timestamps) >= limit:
+            self.last_call_metadata = {
+                "status": "rate_limited",
+                "model": self.settings.model,
+                "attempts": 0,
+                "rate_limit_per_minute": limit,
+            }
+            raise LLMError("LLM client rate limit exceeded")
+        self._request_timestamps.append(now)
+
+    def _sleep_before_retry(self, attempt: int) -> None:
+        if self.settings.retry_backoff_seconds <= 0:
+            return
+        time.sleep(self.settings.retry_backoff_seconds * (2**attempt))
+
+    def _record_metadata(
+        self,
+        status: str,
+        attempts: int,
+        started: float,
+        error_summary: str = "",
+    ) -> None:
+        self.last_call_metadata = {
+            "status": status,
+            "model": self.settings.model,
+            "attempts": attempts,
+            "timeout_seconds": self.settings.timeout_seconds,
+            "retry_count": self.settings.retry_count,
+            "rate_limit_per_minute": self.settings.rate_limit_per_minute,
+            "latency_ms": int((time.perf_counter() - started) * 1000),
+            "error_summary": redact_secrets(error_summary)[:300] if error_summary else "",
+        }
 
 
 def create_chat_client_from_env() -> Optional[ChatClient]:
@@ -176,4 +291,7 @@ def llm_status_from_env() -> Dict[str, object]:
         "mode": "openai_compatible" if settings.enabled else "deterministic_fallback",
         "base_url_configured": bool(settings.base_url),
         "model": settings.model or None,
+        "timeout_seconds": settings.timeout_seconds,
+        "retry_count": settings.retry_count,
+        "rate_limit_per_minute": settings.rate_limit_per_minute,
     }
