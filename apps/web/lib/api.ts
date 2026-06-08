@@ -340,7 +340,7 @@ export const demoTrace: RunTrace = {
     },
     evidence: [],
     tool_call_ids: ["tool-log", "tool-db"],
-    step_ids: ["step-triage", "step-retrieval", "step-tool", "step-verifier", "step-approval"],
+    step_ids: ["step-triage", "step-retrieval", "step-tool", "step-draft", "step-verifier", "step-approval"],
     approval_id: "demo-approval-api-401",
     final_reply: null,
     verifier_report: {
@@ -389,6 +389,19 @@ export const demoTrace: RunTrace = {
       token_count: 164,
       evidence_ids: [],
       tool_call_ids: ["tool-log", "tool-db"],
+      started_at: new Date().toISOString(),
+      ended_at: new Date().toISOString()
+    },
+    {
+      id: "step-draft",
+      run_id: "demo-run-api-401",
+      name: "reply_draft",
+      status: "success",
+      summary: "Reply draft composed and ready for verifier checks.",
+      latency_ms: 16,
+      token_count: 88,
+      evidence_ids: [],
+      tool_call_ids: [],
       started_at: new Date().toISOString(),
       ended_at: new Date().toISOString()
     },

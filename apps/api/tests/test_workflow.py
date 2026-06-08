@@ -18,6 +18,7 @@ from app.knowledge import EMBEDDING_DIMENSIONS, KeywordRetriever, RetrievalFilte
 from app.llm import LLMError, LLMSettings, OpenAICompatibleChatClient
 from app.models import Document, Evidence, Ticket
 from app.store import InMemoryStore
+from app.tasks import RunTaskQueue
 from app.tools import (
     GitHubSearchTool,
     LogSearchTool,
@@ -74,6 +75,14 @@ class FailingToolBackend:
         raise ToolBackendError(self.message)
 
 
+class ExplodingRetriever:
+    uses_store_backend = False
+
+    def search(self, tenant_id, query, chunks, filters=None):
+        del tenant_id, query, chunks, filters
+        raise RuntimeError("simulated retrieval failure")
+
+
 class FakeHTTPResponse:
     def __init__(self, payload: dict) -> None:
         self.payload = json.dumps(payload).encode("utf-8")
@@ -89,6 +98,64 @@ class FakeHTTPResponse:
 
 
 class SupportWorkflowTest(unittest.TestCase):
+    def test_background_queue_executes_queued_run_with_progress_steps(self) -> None:
+        store = InMemoryStore(seed=True)
+        workflow = SupportAgentWorkflow(store)
+        ticket = store.create_ticket(
+            Ticket(
+                tenant_id="acme",
+                customer_name="Alice",
+                channel="email",
+                subject="API 报 401",
+                description="客户说 API 报 401，帮我排查并回复。request_id=req_123",
+            )
+        )
+        run = workflow.create_queued_run(ticket.id, record_queue_step=True)
+        queue = RunTaskQueue(workflow, max_workers=1, run_timeout_seconds=5)
+        self.addCleanup(queue.shutdown)
+
+        self.assertEqual(run.status, "queued")
+        self.assertEqual(store.get_steps_for_run(run.id)[0].status, "queued")
+
+        queue.enqueue(run.id)
+        queue.wait_for_run(run.id, timeout=5)
+
+        completed = store.get_run(run.id)
+        steps = store.get_steps_for_run(run.id)
+        self.assertEqual(completed.status, "awaiting_approval")
+        self.assertEqual(steps[0].name, "workflow_queue")
+        self.assertEqual(steps[0].status, "success")
+        self.assertIn("reply_draft", [step.name for step in steps])
+        self.assertTrue(all(step.status != "running" for step in steps))
+
+    def test_background_queue_marks_failed_runs_and_audit(self) -> None:
+        store = InMemoryStore(seed=True)
+        workflow = SupportAgentWorkflow(store, retriever=ExplodingRetriever())
+        ticket = store.create_ticket(
+            Ticket(
+                tenant_id="acme",
+                customer_name="Alice",
+                channel="email",
+                subject="API 报 401",
+                description="客户说 API 报 401，帮我排查并回复。request_id=req_123",
+            )
+        )
+        run = workflow.create_queued_run(ticket.id, record_queue_step=True)
+        queue = RunTaskQueue(workflow, max_workers=1, run_timeout_seconds=5)
+        self.addCleanup(queue.shutdown)
+
+        queue.enqueue(run.id)
+        queue.wait_for_run(run.id, timeout=5)
+
+        failed = store.get_run(run.id)
+        steps = store.get_steps_for_run(run.id)
+        audit_actions = [audit.action for audit in store.list_audit_logs("acme")]
+        self.assertEqual(failed.status, "failed")
+        self.assertEqual(store.get_ticket(ticket.id).status, "failed")
+        self.assertIn("run_failed", [step.name for step in steps])
+        self.assertTrue(any(step.status == "failed" for step in steps))
+        self.assertIn("agent_run_failed", audit_actions)
+
     def test_api_401_ticket_reaches_approval_and_reply(self) -> None:
         store = InMemoryStore(seed=True)
         workflow = SupportAgentWorkflow(store)
@@ -116,7 +183,7 @@ class SupportWorkflowTest(unittest.TestCase):
         step_names = [step.name for step in store.get_steps_for_run(run.id)]
         self.assertEqual(
             step_names,
-            ["triage", "retrieval", "tool_call_optional", "verifier", "human_approval"],
+            ["triage", "retrieval", "tool_call_optional", "reply_draft", "verifier", "human_approval"],
         )
 
         tool_calls = store.get_tool_calls_for_run(run.id)

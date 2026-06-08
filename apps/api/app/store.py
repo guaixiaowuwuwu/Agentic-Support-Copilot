@@ -111,6 +111,9 @@ class Store(Protocol):
     def add_step(self, step: AgentStep) -> AgentStep:
         ...
 
+    def update_step(self, step: AgentStep) -> AgentStep:
+        ...
+
     def get_steps_for_run(self, run_id: str) -> List[AgentStep]:
         ...
 
@@ -410,7 +413,7 @@ class InMemoryStore:
             self.runs[run.id] = run
             ticket = self.get_ticket(run.ticket_id)
             ticket.run_ids.append(run.id)
-            ticket.status = "running"
+            ticket.status = "queued" if run.status == "queued" else "running"
             self.update_ticket(ticket)
         return run
 
@@ -431,6 +434,16 @@ class InMemoryStore:
             self.steps[step.id] = step
             run = self.get_run(step.run_id)
             run.step_ids.append(step.id)
+            run.current_node = step.name
+            self.update_run(run)
+        return step
+
+    def update_step(self, step: AgentStep) -> AgentStep:
+        with self._lock:
+            if step.id not in self.steps:
+                raise NotFoundError(step.id)
+            self.steps[step.id] = step
+            run = self.get_run(step.run_id)
             run.current_node = step.name
             self.update_run(run)
         return step
@@ -1151,9 +1164,10 @@ class PostgresStore:
                     run.updated_at,
                 ),
             ).fetchone()
+            ticket_status = "queued" if run.status == "queued" else "running"
             conn.execute(
                 "UPDATE tickets SET status = %s, updated_at = %s WHERE id = %s",
-                ("running", utc_now(), _uuid(run.ticket_id)),
+                (ticket_status, utc_now(), _uuid(run.ticket_id)),
             )
             return self._run_from_row(conn, row)
 
@@ -1234,6 +1248,46 @@ class PostgresStore:
                     step.ended_at,
                 ),
             ).fetchone()
+            conn.execute(
+                "UPDATE agent_runs SET current_node = %s, updated_at = %s WHERE id = %s",
+                (step.name, utc_now(), _uuid(step.run_id)),
+            )
+            return self._step_from_row(row)
+
+    def update_step(self, step: AgentStep) -> AgentStep:
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                """
+                UPDATE agent_steps
+                SET run_id = %s,
+                    name = %s,
+                    status = %s,
+                    summary = %s,
+                    latency_ms = %s,
+                    token_count = %s,
+                    evidence_ids = %s,
+                    tool_call_ids = %s,
+                    started_at = %s,
+                    ended_at = %s
+                WHERE id = %s
+                RETURNING *
+                """,
+                (
+                    _uuid(step.run_id),
+                    step.name,
+                    step.status,
+                    step.summary,
+                    step.latency_ms,
+                    step.token_count,
+                    step.evidence_ids,
+                    _uuid_list(step.tool_call_ids),
+                    step.started_at,
+                    step.ended_at,
+                    _uuid(step.id),
+                ),
+            ).fetchone()
+            if row is None:
+                raise NotFoundError(step.id)
             conn.execute(
                 "UPDATE agent_runs SET current_node = %s, updated_at = %s WHERE id = %s",
                 (step.name, utc_now(), _uuid(step.run_id)),

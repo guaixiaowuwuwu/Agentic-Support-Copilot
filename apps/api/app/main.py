@@ -33,6 +33,7 @@ from .observability import configure_logging, configure_tracing, log_event, set_
 from .schemas import ApprovalDecisionRequest, CreateDocumentRequest, CreateTicketRequest, IngestEmbeddingsRequest
 from .security import clip_text, redact_secrets
 from .store import NotFoundError, create_store
+from .tasks import RunTaskQueue
 from .tools import create_tool_registry_from_env
 
 KNOWLEDGE_DOCUMENT_MAINTENANCE_POLICY = {
@@ -63,6 +64,7 @@ KNOWLEDGE_DOCUMENT_MAINTENANCE_POLICY = {
 
 store = create_store(seed=True)
 workflow = SupportAgentWorkflow(store, tools=create_tool_registry_from_env(), chat_client=create_chat_client_from_env())
+run_queue = RunTaskQueue(workflow)
 configure_logging()
 configure_tracing()
 
@@ -139,6 +141,13 @@ def hidden_not_found(exc: HTTPException) -> HTTPException:
     if exc.status_code == 404:
         return not_found(NotFoundError("restricted"))
     return exc
+
+
+def active_run_queue() -> RunTaskQueue:
+    global run_queue
+    if run_queue.workflow is not workflow:
+        run_queue = RunTaskQueue(workflow)
+    return run_queue
 
 
 def audit(
@@ -255,6 +264,7 @@ def health() -> dict:
             "configured_backends": workflow.tools.configured_backends(),
             "status": workflow.tools.config_status(),
         },
+        "run_queue": active_run_queue().status(),
     }
 
 
@@ -300,10 +310,11 @@ def get_ticket(ticket_id: str, principal: Principal = Depends(get_current_princi
 
 @app.post("/api/runs/{ticket_id}/start")
 def start_run(ticket_id: str, principal: Principal = Depends(get_current_principal)) -> dict:
-    require_role(principal, RUN_ROLES, "Starting runs requires support_agent, approver, or admin role")
+    require_role(principal, RUN_ROLES, "Starting runs requires support_agent or admin role")
     try:
         ticket = assert_ticket_access(ticket_id, principal)
-        run = workflow.start_run(ticket.id)
+        run = workflow.create_queued_run(ticket.id, record_queue_step=True)
+        response = to_dict(run)
         audit(
             principal,
             "agent_run_requested",
@@ -317,7 +328,8 @@ def start_run(ticket_id: str, principal: Principal = Depends(get_current_princip
             },
             tenant_id=ticket.tenant_id,
         )
-        return to_dict(run)
+        active_run_queue().enqueue(run.id)
+        return response
     except NotFoundError as exc:
         raise not_found(exc)
     except HTTPException as exc:
@@ -354,6 +366,72 @@ def get_trace(run_id: str, principal: Principal = Depends(get_current_principal)
         raise not_found(exc)
     except HTTPException as exc:
         raise hidden_not_found(exc)
+
+
+@app.post("/api/runs/{run_id}/retry")
+def retry_run(run_id: str, principal: Principal = Depends(get_current_principal)) -> dict:
+    require_role(principal, RUN_ROLES, "Retrying runs requires support_agent or admin role")
+    try:
+        failed_run = store.get_run(run_id)
+        require_tenant_access(principal, failed_run.tenant_id, hide=True)
+        if failed_run.status != "failed":
+            raise HTTPException(status_code=409, detail="Only failed runs can be retried")
+        ticket = store.get_ticket(failed_run.ticket_id)
+        retry = workflow.create_queued_run(ticket.id, record_queue_step=True)
+        response = to_dict(retry)
+        audit(
+            principal,
+            "agent_run_retry_requested",
+            "agent_run",
+            retry.id,
+            {
+                "ticket_id": ticket.id,
+                "retry_of_run_id": failed_run.id,
+                "retry_of_trace_id": failed_run.trace_id,
+                "trace_id": retry.trace_id,
+                "correlation_id": retry.correlation_id,
+                "status": retry.status,
+            },
+            tenant_id=ticket.tenant_id,
+        )
+        active_run_queue().enqueue(retry.id)
+        return response
+    except NotFoundError as exc:
+        raise not_found(exc)
+    except HTTPException as exc:
+        raise hidden_not_found(exc)
+
+
+@app.post("/api/runs/{run_id}/cancel")
+def cancel_run(run_id: str, principal: Principal = Depends(get_current_principal)) -> dict:
+    require_role(principal, RUN_ROLES, "Cancelling runs requires support_agent or admin role")
+    try:
+        run = store.get_run(run_id)
+        require_tenant_access(principal, run.tenant_id, hide=True)
+        if run.status not in {"queued", "running"}:
+            raise HTTPException(status_code=409, detail="Only queued or running runs can be cancelled")
+        active_run_queue().request_cancel(run.id)
+        cancelled = workflow.cancel_run(run.id, actor=principal.email, reason="Cancelled from API request.")
+        audit(
+            principal,
+            "agent_run_cancel_requested",
+            "agent_run",
+            run.id,
+            {
+                "ticket_id": run.ticket_id,
+                "trace_id": run.trace_id,
+                "correlation_id": run.correlation_id,
+                "status": cancelled.status,
+            },
+            tenant_id=run.tenant_id,
+        )
+        return to_dict(cancelled)
+    except NotFoundError as exc:
+        raise not_found(exc)
+    except HTTPException as exc:
+        raise hidden_not_found(exc)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
 
 
 @app.get("/api/approvals")

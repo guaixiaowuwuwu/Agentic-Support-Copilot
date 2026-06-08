@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 import unittest
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from app import main as api_main
 from app.agents import SupportAgentWorkflow
 from app.models import AuditLog, Ticket
 from app.store import InMemoryStore
+from app.tasks import RunTaskQueue
 
 
 AUTH_ENV_KEYS = ("APP_ENV", "SUPPORT_COPILOT_AUTH_MODE", "SUPPORT_COPILOT_TRUSTED_IDENTITY_SECRET")
@@ -51,6 +53,8 @@ class ApiAuthTest(unittest.TestCase):
         self.store = InMemoryStore(seed=True)
         api_main.store = self.store
         api_main.workflow = SupportAgentWorkflow(self.store)
+        api_main.run_queue = RunTaskQueue(api_main.workflow, max_workers=1, run_timeout_seconds=5)
+        self.addCleanup(api_main.run_queue.shutdown)
         self.client = TestClient(api_main.app)
 
     def _restore_auth_env(self) -> None:
@@ -153,6 +157,68 @@ class ApiAuthTest(unittest.TestCase):
 
         self.assertEqual(create_response.status_code, 403)
         self.assertEqual(start_response.status_code, 403)
+
+    def test_start_run_returns_queued_before_background_work_finishes(self) -> None:
+        class SlowWorkflow(SupportAgentWorkflow):
+            def execute_run(self, run_id: str, cancellation_token=None):
+                time.sleep(0.5)
+                return super().execute_run(run_id, cancellation_token=cancellation_token)
+
+        ticket = self.create_ticket("acme")
+        api_main.workflow = SlowWorkflow(self.store)
+        api_main.run_queue = RunTaskQueue(api_main.workflow, max_workers=1, run_timeout_seconds=5)
+        self.addCleanup(api_main.run_queue.shutdown)
+
+        started = time.perf_counter()
+        response = self.client.post(f"/api/runs/{ticket.id}/start", headers=auth_headers())
+        elapsed = time.perf_counter() - started
+
+        self.assertEqual(response.status_code, 200)
+        self.assertLess(elapsed, 0.4)
+        payload = response.json()
+        self.assertEqual(payload["status"], "queued")
+        trace_response = self.client.get(f"/api/runs/{payload['id']}/trace", headers=auth_headers())
+        self.assertEqual(trace_response.status_code, 200)
+        self.assertIn(trace_response.json()["run"]["status"], {"queued", "running"})
+
+        api_main.run_queue.wait_for_run(payload["id"], timeout=5)
+        self.assertEqual(self.store.get_run(payload["id"]).status, "awaiting_approval")
+
+    def test_failed_run_retry_and_cancel_are_audited(self) -> None:
+        failed_ticket = self.create_ticket("acme", "Failed API 401")
+        failed_run = api_main.workflow.create_queued_run(failed_ticket.id, record_queue_step=True)
+        failed_run.status = "failed"
+        self.store.update_run(failed_run)
+
+        retry_response = self.client.post(f"/api/runs/{failed_run.id}/retry", headers=auth_headers())
+
+        self.assertEqual(retry_response.status_code, 200)
+        retry_payload = retry_response.json()
+        self.assertEqual(retry_payload["status"], "queued")
+        api_main.run_queue.wait_for_run(retry_payload["id"], timeout=5)
+
+        class SlowWorkflow(SupportAgentWorkflow):
+            def execute_run(self, run_id: str, cancellation_token=None):
+                time.sleep(0.5)
+                return super().execute_run(run_id, cancellation_token=cancellation_token)
+
+        cancel_ticket = self.create_ticket("acme", "Cancel API 401")
+        api_main.workflow = SlowWorkflow(self.store)
+        api_main.run_queue = RunTaskQueue(api_main.workflow, max_workers=1, run_timeout_seconds=5)
+        self.addCleanup(api_main.run_queue.shutdown)
+
+        start_response = self.client.post(f"/api/runs/{cancel_ticket.id}/start", headers=auth_headers())
+        self.assertEqual(start_response.status_code, 200)
+        cancel_run_id = start_response.json()["id"]
+        cancel_response = self.client.post(f"/api/runs/{cancel_run_id}/cancel", headers=auth_headers())
+        self.assertEqual(cancel_response.status_code, 200)
+        self.assertEqual(cancel_response.json()["status"], "cancelled")
+        api_main.run_queue.wait_for_run(cancel_run_id, timeout=5)
+
+        audit_actions = [audit.action for audit in self.store.list_audit_logs("acme")]
+        self.assertIn("agent_run_retry_requested", audit_actions)
+        self.assertIn("agent_run_cancel_requested", audit_actions)
+        self.assertIn("agent_run_cancelled", audit_actions)
 
     def test_run_trace_is_scoped_to_run_tenant(self) -> None:
         globex_ticket = self.create_ticket("globex")

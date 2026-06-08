@@ -2,12 +2,14 @@ import { normalizeLocale, statusLabel, type Locale } from "@/lib/i18n";
 
 const variants: Record<string, string> = {
   open: "badge-neutral",
+  queued: "badge-amber",
   running: "badge-blue",
   triaged: "badge-blue",
   awaiting_approval: "badge-amber",
   replied: "badge-green",
   completed: "badge-green",
   rejected: "badge-red",
+  cancelled: "badge-neutral",
   pending: "badge-amber",
   approved: "badge-green",
   success: "badge-green",

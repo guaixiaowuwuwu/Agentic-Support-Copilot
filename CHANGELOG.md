@@ -2,6 +2,30 @@
 
 > 本日志按每次更新的能力内容分组，不按日期分组。
 
+## 异步 Agent Run 与逐步 Trace
+
+### 新增
+- 新增进程内轻量任务队列 `RunTaskQueue`，`POST /api/runs/{ticket_id}/start` 现在只创建 `queued` run 并立即返回，再由后台 worker 执行 workflow。
+- 新增 run 取消和失败重试接口：`POST /api/runs/{run_id}/cancel`、`POST /api/runs/{run_id}/retry`。
+- Agent step 支持 `queued`、`running`、`success`、`blocked`、`failed` 状态，并通过 store `update_step` 在节点开始和完成时逐步更新 trace。
+- Trace 页面新增客户端轮询组件，运行中自动刷新步骤、工具调用、证据和校验结果，并提供取消运行、失败后重试操作。
+- 新增 run 级超时与协作式取消 token；工具和 LLM 调用继续使用各自配置的 timeout / retry 策略，长耗时调用结束后会在节点边界检查取消状态。
+
+### 变更
+- 同步 workflow 入口保留兼容，但 API 启动路径改为 queued + background execution，避免 HTTP 请求等待完整 agent workflow。
+- workflow 拆分 `workflow_queue`、`triage`、`retrieval`、`tool_call_optional`、`reply_draft`、`verifier`、`human_approval` 等逐步 trace 节点。
+- 失败 run 会落库为 `failed`，未完成 step 会标记为 `failed`，并写入 `agent_run_failed` audit log。
+- 取消 run 会落库为 `cancelled`，未完成 step 会标记为 `blocked`，并写入 `agent_run_cancel_requested` 和 `agent_run_cancelled` audit log。
+- 重试失败 run 会创建新的 queued run，保留原 run、原 trace 和 retry audit log，避免覆盖历史追踪。
+- 前端状态徽标、共享类型、demo trace 和中英文字典同步补齐 `queued`、`cancelled`、重试和取消文案。
+
+### 验证
+- 新增后端测试覆盖 queued run 后台执行、逐步 step 状态、失败落库和 audit、失败重试、运行取消和 API 启动非阻塞行为。
+- 后端单元测试通过：`.venv/bin/python -m unittest discover -s apps/api/tests`。
+- 前端 TypeScript no-emit 检查通过：`npm --workspace apps/web exec tsc -- --noEmit`。
+- 前端 production build 通过：`npm --workspace apps/web run build`。
+- 已用 in-app Browser 验证创建工单后 run 不阻塞页面，trace 页可看到 `workflow_queue -> triage -> retrieval -> tool_call_optional -> reply_draft -> verifier -> human_approval` 逐步推进。
+
 ## LLM 输出可控与结构化校验
 
 ### 新增

@@ -1,10 +1,13 @@
 export type TicketStatus =
   | "open"
+  | "queued"
   | "running"
   | "triaged"
   | "awaiting_approval"
   | "replied"
-  | "rejected";
+  | "rejected"
+  | "failed"
+  | "cancelled";
 
 export interface Ticket {
   id: string;

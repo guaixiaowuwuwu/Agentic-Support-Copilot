@@ -54,6 +54,12 @@ SECRET_REQUEST_TERMS = (
     "paste",
     "upload",
 )
+ACTIVE_RUN_STATUSES = {"queued", "running"}
+OPEN_STEP_STATUSES = {"queued", "running"}
+
+
+class WorkflowCancelled(RuntimeError):
+    pass
 NEGATION_TERMS = ("不要", "请勿", "不能", "不得", "避免", "do not", "don't", "never", "without")
 WRITE_OPERATION_TERMS = (
     "修改客户数据",
@@ -185,9 +191,39 @@ class SupportAgentWorkflow:
         self.prompt_config = prompt_config or PromptConfig.from_env()
         self.min_retrieval_confidence = min_retrieval_confidence
 
-    def start_run(self, ticket_id: str) -> AgentRun:
+    def create_queued_run(self, ticket_id: str, *, record_queue_step: bool = False) -> AgentRun:
         ticket = self.store.get_ticket(ticket_id)
-        run = self.store.create_run(AgentRun(ticket_id=ticket.id, tenant_id=ticket.tenant_id, status="running"))
+        run = self.store.create_run(
+            AgentRun(
+                ticket_id=ticket.id,
+                tenant_id=ticket.tenant_id,
+                status="queued",
+                current_node="queued",
+            )
+        )
+        if record_queue_step:
+            self._record_step(
+                run,
+                "workflow_queue",
+                "queued",
+                "Run queued for background workflow execution.",
+                ticket.subject,
+                ticket.description,
+            )
+        return self.store.get_run(run.id)
+
+    def start_run(self, ticket_id: str) -> AgentRun:
+        run = self.create_queued_run(ticket_id)
+        return self.execute_run(run.id)
+
+    def execute_run(self, run_id: str, cancellation_token: Optional[Any] = None) -> AgentRun:
+        run = self.store.get_run(run_id)
+        ticket = self.store.get_ticket(run.ticket_id)
+        if run.status == "cancelled":
+            raise WorkflowCancelled(f"Run {run.id} was cancelled before worker execution")
+        if run.status not in ACTIVE_RUN_STATUSES:
+            raise ValueError(f"Run {run.id} cannot be executed from status {run.status}")
+
         with telemetry_span(
             "agent.run",
             {
@@ -198,6 +234,14 @@ class SupportAgentWorkflow:
                 "tenant.id": ticket.tenant_id,
             },
         ):
+            self._raise_if_cancelled(run, ticket, cancellation_token, "workflow start")
+            self._finish_queue_step(run)
+            run = self.store.get_run(run.id)
+            run.status = "running"
+            run.current_node = "triage"
+            ticket.status = "running"
+            self.store.update_run(run)
+            self.store.update_ticket(ticket)
             self._audit(
                 ticket.tenant_id,
                 "system",
@@ -207,7 +251,16 @@ class SupportAgentWorkflow:
                 self._run_metadata(run, ticket),
             )
 
-            triage = self._triage(ticket)
+            triage_step = self._start_step(
+                run,
+                "triage",
+                "Classifying ticket priority, issue type, and risk.",
+                ticket.subject,
+                ticket.description,
+            )
+            with measure_step() as metric:
+                triage = self._triage(ticket)
+            self._raise_if_cancelled(run, ticket, cancellation_token, "triage")
             run.triage = triage
             run.status = "running"
             ticket.priority = triage["priority"]
@@ -215,15 +268,24 @@ class SupportAgentWorkflow:
             ticket.status = "triaged"
             self.store.update_ticket(ticket)
             self.store.update_run(run)
-            self._record_step(
+            self._complete_step(
+                triage_step,
                 run,
-                "triage",
                 "success",
                 f"{triage['issue_type']} classified as {triage['priority']} with {triage['risk_level']} risk.",
                 ticket.subject,
                 ticket.description,
+                latency_ms=metric["latency_ms"],
             )
 
+            self._raise_if_cancelled(run, ticket, cancellation_token, "retrieval")
+            retrieval_step = self._start_step(
+                run,
+                "retrieval",
+                "Searching tenant-scoped knowledge evidence.",
+                ticket.subject,
+                ticket.description,
+            )
             with measure_step() as metric:
                 chunks = None if self.retriever.uses_store_backend else self.store.list_chunks()
                 query = f"{ticket.subject} {ticket.description}"
@@ -234,12 +296,13 @@ class SupportAgentWorkflow:
                     chunks,
                     filters=retrieval_filters,
                 )
+            self._raise_if_cancelled(run, ticket, cancellation_token, "retrieval")
             run.evidence = evidence
             self.store.update_run(run)
             top_score = max((item.score for item in evidence), default=0.0)
-            self._record_step(
+            self._complete_step(
+                retrieval_step,
                 run,
-                "retrieval",
                 "success" if top_score >= self.min_retrieval_confidence else "blocked",
                 (
                     f"Found {len(evidence)} tenant-scoped evidence chunks; "
@@ -250,18 +313,72 @@ class SupportAgentWorkflow:
                 evidence_ids=[item.chunk_id for item in evidence],
             )
 
-            tool_calls = self._execute_optional_tools(run, ticket, triage)
-            draft_reply = self._compose_reply(run, ticket, triage, evidence, tool_calls)
+            self._raise_if_cancelled(run, ticket, cancellation_token, "optional tools")
+            tool_step = self._start_step(
+                run,
+                "tool_call_optional",
+                "Executing planned read-only tools with configured timeouts.",
+                ticket.description,
+            )
+            with measure_step() as metric:
+                planned_tools = self.tools.plan(ticket, triage)
+                tool_calls = self._execute_optional_tools(
+                    run,
+                    ticket,
+                    triage,
+                    planned_tools=planned_tools,
+                    cancellation_token=cancellation_token,
+                )
+            tool_status, tool_summary = self._tool_step_outcome(planned_tools, tool_calls)
+            self._complete_step(
+                tool_step,
+                run,
+                tool_status,
+                tool_summary,
+                ticket.description,
+                latency_ms=metric["latency_ms"],
+                tool_call_ids=[call.id for call in tool_calls],
+            )
 
-            verifier_report = self._verify(draft_reply, evidence, triage)
-            run.verifier_report = verifier_report
-            self.store.update_run(run)
-            self._record_step(
+            self._raise_if_cancelled(run, ticket, cancellation_token, "reply draft")
+            draft_step = self._start_step(
+                run,
+                "reply_draft",
+                "Composing a customer-facing draft using evidence, tool summaries, and LLM policy.",
+                ticket.subject,
+                ticket.description,
+            )
+            with measure_step() as metric:
+                draft_reply = self._compose_reply(run, ticket, triage, evidence, tool_calls)
+            self._raise_if_cancelled(run, ticket, cancellation_token, "reply draft")
+            self._complete_step(
+                draft_step,
+                run,
+                "success",
+                "Reply draft composed and ready for verifier checks.",
+                draft_reply,
+                latency_ms=metric["latency_ms"],
+            )
+
+            self._raise_if_cancelled(run, ticket, cancellation_token, "verifier")
+            verifier_step = self._start_step(
                 run,
                 "verifier",
+                "Checking citations, secret handling, and write-operation policy.",
+                draft_reply,
+            )
+            with measure_step() as metric:
+                verifier_report = self._verify(draft_reply, evidence, triage)
+            self._raise_if_cancelled(run, ticket, cancellation_token, "verifier")
+            run.verifier_report = verifier_report
+            self.store.update_run(run)
+            self._complete_step(
+                verifier_step,
+                run,
                 "blocked" if verifier_report.get("manual_review_required") else "success",
                 verifier_report["summary"],
                 draft_reply,
+                latency_ms=metric["latency_ms"],
                 evidence_ids=[item.chunk_id for item in evidence],
             )
 
@@ -273,28 +390,37 @@ class SupportAgentWorkflow:
                 approval_reason = "High-risk workflow requires manual review before any customer-visible reply."
             else:
                 approval_reason = "Customer-facing reply requires approval."
-            approval = self.store.create_approval(
-                Approval(
-                    run_id=run.id,
-                    ticket_id=ticket.id,
-                    action_type=action_type,
-                    proposed_reply=draft_reply,
-                    risk_level=triage["risk_level"],
-                    reason=approval_reason,
-                )
+            self._raise_if_cancelled(run, ticket, cancellation_token, "human approval")
+            approval_step = self._start_step(
+                run,
+                "human_approval",
+                "Creating human approval checkpoint before any customer-visible reply.",
+                draft_reply,
             )
+            with measure_step() as metric:
+                approval = self.store.create_approval(
+                    Approval(
+                        run_id=run.id,
+                        ticket_id=ticket.id,
+                        action_type=action_type,
+                        proposed_reply=draft_reply,
+                        risk_level=triage["risk_level"],
+                        reason=approval_reason,
+                    )
+                )
             run.approval_id = approval.id
             run.status = "awaiting_approval"
             run.current_node = "human_approval"
             ticket.status = "awaiting_approval"
             self.store.update_run(run)
             self.store.update_ticket(ticket)
-            self._record_step(
+            self._complete_step(
+                approval_step,
                 run,
-                "human_approval",
                 "blocked",
                 f"Created {action_type} approval {approval.id}.",
                 draft_reply,
+                latency_ms=metric["latency_ms"],
             )
             return self.store.get_run(run.id)
 
@@ -364,6 +490,67 @@ class SupportAgentWorkflow:
         )
         return self.store.get_run(run.id)
 
+    def cancel_run(self, run_id: str, *, actor: str = "system", reason: str = "Run cancelled.") -> AgentRun:
+        run = self.store.get_run(run_id)
+        ticket = self.store.get_ticket(run.ticket_id)
+        if run.status in {"completed", "awaiting_approval", "rejected"}:
+            raise ValueError(f"Run {run.id} cannot be cancelled from status {run.status}")
+        if run.status != "cancelled":
+            self._mark_open_steps(run.id, "blocked", "Step stopped because the run was cancelled.")
+            run.status = "cancelled"
+            run.current_node = "cancelled"
+            ticket.status = "cancelled"
+            self.store.update_run(run)
+            self.store.update_ticket(ticket)
+            if not any(step.name == "run_cancelled" for step in self.store.get_steps_for_run(run.id)):
+                self._record_step(run, "run_cancelled", "blocked", reason)
+            self._audit(
+                ticket.tenant_id,
+                actor,
+                "agent_run_cancelled",
+                "agent_run",
+                run.id,
+                {
+                    **self._run_metadata(run, ticket),
+                    "reason": clip_text(redact_secrets(reason), 400),
+                },
+            )
+        return self.store.get_run(run.id)
+
+    def fail_run(self, run_id: str, *, error_summary: str, actor: str = "system") -> AgentRun:
+        run = self.store.get_run(run_id)
+        ticket = self.store.get_ticket(run.ticket_id)
+        if run.status in {"completed", "awaiting_approval", "rejected", "cancelled"}:
+            return self.store.get_run(run.id)
+
+        clean_error = clip_text(redact_secrets(error_summary), 400)
+        self._mark_open_steps(run.id, "failed", f"Step failed before completion: {clean_error}")
+        run.status = "failed"
+        run.current_node = "failed"
+        run.verifier_report = {
+            **run.verifier_report,
+            "passed": False,
+            "summary": f"Run failed before approval: {clean_error}",
+            "execution_error": clean_error,
+        }
+        ticket.status = "failed"
+        self.store.update_run(run)
+        self.store.update_ticket(ticket)
+        if not any(step.name == "run_failed" for step in self.store.get_steps_for_run(run.id)):
+            self._record_step(run, "run_failed", "failed", f"Run failed before approval: {clean_error}")
+        self._audit(
+            ticket.tenant_id,
+            actor,
+            "agent_run_failed",
+            "agent_run",
+            run.id,
+            {
+                **self._run_metadata(run, ticket),
+                "error_summary": clean_error,
+            },
+        )
+        return self.store.get_run(run.id)
+
     def _triage(self, ticket: Ticket) -> Dict[str, str]:
         text = f"{ticket.subject} {ticket.description}".lower()
         outage_terms = ["production down", "outage", "all customers", "sev1"]
@@ -419,11 +606,19 @@ class SupportAgentWorkflow:
             as_of=utc_now(),
         )
 
-    def _execute_optional_tools(self, run: AgentRun, ticket: Ticket, triage: Dict[str, str]) -> List[ToolCall]:
-        planned_tools = self.tools.plan(ticket, triage)
+    def _execute_optional_tools(
+        self,
+        run: AgentRun,
+        ticket: Ticket,
+        triage: Dict[str, str],
+        *,
+        planned_tools: List[str],
+        cancellation_token: Optional[Any] = None,
+    ) -> List[ToolCall]:
         tool_calls: List[ToolCall] = []
 
         for tool_name in planned_tools:
+            self._raise_if_cancelled(run, ticket, cancellation_token, f"tool {tool_name}")
             try:
                 call = self.tools.execute(run.id, tool_name, ticket, triage)
             except ToolPermissionError as exc:
@@ -437,7 +632,11 @@ class SupportAgentWorkflow:
             self.store.add_tool_call(call)
             self._audit_tool_call(ticket, call)
             tool_calls.append(call)
+            self._raise_if_cancelled(run, ticket, cancellation_token, f"tool {tool_name}")
 
+        return tool_calls
+
+    def _tool_step_outcome(self, planned_tools: List[str], tool_calls: List[ToolCall]) -> tuple[str, str]:
         if planned_tools:
             successful = sum(1 for call in tool_calls if call.status == "success")
             denied = sum(1 for call in tool_calls if call.status == "denied")
@@ -447,16 +646,7 @@ class SupportAgentWorkflow:
         else:
             status = "success"
             summary = "No tool call required for this ticket."
-
-        self._record_step(
-            run,
-            "tool_call_optional",
-            status,
-            summary,
-            ticket.description,
-            tool_call_ids=[call.id for call in tool_calls],
-        )
-        return tool_calls
+        return status, summary
 
     def _compose_reply(
         self,
@@ -851,6 +1041,110 @@ class SupportAgentWorkflow:
             ],
             "invalid_citations": sorted(set(invalid_citations)),
         }
+
+    def _raise_if_cancelled(
+        self,
+        run: AgentRun,
+        ticket: Ticket,
+        cancellation_token: Optional[Any],
+        checkpoint: str,
+    ) -> None:
+        token_cancelled = bool(
+            cancellation_token
+            and getattr(cancellation_token, "is_cancelled", lambda: False)()
+        )
+        persisted_status = self.store.get_run(run.id).status
+        if token_cancelled or persisted_status == "cancelled":
+            raise WorkflowCancelled(f"Run {run.id} cancelled at {checkpoint} for ticket {ticket.id}")
+
+    def _finish_queue_step(self, run: AgentRun) -> None:
+        for step in self.store.get_steps_for_run(run.id):
+            if step.name == "workflow_queue" and step.status == "queued":
+                step.status = "success"
+                step.summary = "Run dequeued and picked up by a workflow worker."
+                step.ended_at = utc_now()
+                self.store.update_step(step)
+                return
+
+    def _start_step(
+        self,
+        run: AgentRun,
+        name: str,
+        summary: str,
+        *token_parts: str,
+        evidence_ids: Optional[List[str]] = None,
+        tool_call_ids: Optional[List[str]] = None,
+    ) -> AgentStep:
+        run.current_node = name
+        step = AgentStep(
+            run_id=run.id,
+            name=name,
+            status="running",
+            summary=clip_text(redact_secrets(summary), 1000),
+            latency_ms=0,
+            token_count=estimate_tokens(summary, *token_parts),
+            evidence_ids=evidence_ids or [],
+            tool_call_ids=tool_call_ids or [],
+        )
+        recorded = self.store.add_step(step)
+        log_event(
+            "INFO",
+            "agent_step_started",
+            run_id=run.id,
+            trace_id=run.trace_id,
+            correlation_id=run.correlation_id,
+            tenant_id=run.tenant_id,
+            step_id=recorded.id,
+            step_name=name,
+            status=recorded.status,
+        )
+        return recorded
+
+    def _complete_step(
+        self,
+        step: AgentStep,
+        run: AgentRun,
+        status: str,
+        summary: str,
+        *token_parts: str,
+        latency_ms: Optional[int] = None,
+        evidence_ids: Optional[List[str]] = None,
+        tool_call_ids: Optional[List[str]] = None,
+    ) -> AgentStep:
+        step.status = status
+        step.summary = clip_text(redact_secrets(summary), 1000)
+        step.latency_ms = 0 if latency_ms is None else latency_ms
+        step.token_count = estimate_tokens(summary, *token_parts)
+        step.evidence_ids = evidence_ids or []
+        step.tool_call_ids = tool_call_ids or []
+        step.ended_at = utc_now()
+        recorded = self.store.update_step(step)
+        log_event(
+            "INFO" if status == "success" else "WARNING",
+            "agent_step_completed",
+            run_id=run.id,
+            trace_id=run.trace_id,
+            correlation_id=run.correlation_id,
+            tenant_id=run.tenant_id,
+            step_id=recorded.id,
+            step_name=recorded.name,
+            status=recorded.status,
+            latency_ms=recorded.latency_ms,
+            token_count=recorded.token_count,
+            evidence_ids=recorded.evidence_ids,
+            tool_call_ids=recorded.tool_call_ids,
+            summary=recorded.summary,
+        )
+        return recorded
+
+    def _mark_open_steps(self, run_id: str, status: str, summary: str) -> None:
+        for step in self.store.get_steps_for_run(run_id):
+            if step.status not in OPEN_STEP_STATUSES:
+                continue
+            step.status = status
+            step.summary = clip_text(redact_secrets(summary), 1000)
+            step.ended_at = utc_now()
+            self.store.update_step(step)
 
     def _record_step(
         self,

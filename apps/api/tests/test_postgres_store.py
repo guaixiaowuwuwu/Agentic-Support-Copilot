@@ -134,7 +134,7 @@ class PostgresStorePersistenceTest(unittest.TestCase):
         self.assertTrue(reloaded.list_chunks())
         self.assertEqual(
             [step.name for step in reloaded.get_steps_for_run(run.id)],
-            ["triage", "retrieval", "tool_call_optional", "verifier", "human_approval"],
+            ["triage", "retrieval", "tool_call_optional", "reply_draft", "verifier", "human_approval"],
         )
         self.assertEqual(
             [call.tool_name for call in reloaded.get_tool_calls_for_run(run.id)],
