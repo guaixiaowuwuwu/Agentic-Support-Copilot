@@ -182,6 +182,16 @@ textarea {
   text-transform: uppercase;
 }
 
+.id-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 750;
+}
+
 .title-actions,
 .action-row,
 .approval-footer,
@@ -635,6 +645,47 @@ tr:last-child td {
   color: var(--accent-strong);
 }
 
+.audit-filters {
+  margin-bottom: 18px;
+}
+
+.audit-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(120px, 1fr));
+  gap: 10px;
+  padding: 16px;
+}
+
+.audit-filters .form-footer {
+  justify-content: flex-end;
+  padding: 0 16px 16px;
+}
+
+.table-inline-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  width: fit-content;
+  margin-top: 7px;
+  color: var(--accent-strong);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.audit-metadata {
+  min-width: 280px;
+  max-width: 440px;
+}
+
+.audit-metadata span {
+  display: block;
+  margin-bottom: 4px;
+  overflow-wrap: anywhere;
+  color: #3c444c;
+  font-size: 12px;
+  line-height: 1.42;
+}
+
 .approval-list {
   display: grid;
   gap: 16px;
@@ -757,7 +808,8 @@ tr:last-child td {
   .work-grid,
   .detail-grid,
   .trace-grid,
-  .form-row {
+  .form-row,
+  .audit-filter-grid {
     grid-template-columns: 1fr;
   }
 }

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from threading import RLock
 from typing import Any, Dict, List, Optional, Protocol, Sequence
@@ -24,6 +25,7 @@ from .models import (
     Ticket,
     ToolCall,
 )
+from .security import sanitize_for_log
 from .time_utils import utc_now
 
 try:
@@ -54,7 +56,16 @@ class Store(Protocol):
     def add_audit(self, audit: AuditLog) -> AuditLog:
         ...
 
-    def list_audit_logs(self, tenant_id: Optional[str] = None) -> List[AuditLog]:
+    def list_audit_logs(
+        self,
+        tenant_id: Optional[str] = None,
+        actor: Optional[str] = None,
+        action: Optional[str] = None,
+        target: Optional[str] = None,
+        start_time: Optional[str] = None,
+        end_time: Optional[str] = None,
+        limit: int = 200,
+    ) -> List[AuditLog]:
         ...
 
     def create_ticket(self, ticket: Ticket) -> Ticket:
@@ -194,15 +205,55 @@ class InMemoryStore:
         )
 
     def add_audit(self, audit: AuditLog) -> AuditLog:
+        audit.metadata = sanitize_for_log(audit.metadata)
         with self._lock:
             self.audit_logs[audit.id] = audit
         return audit
 
-    def list_audit_logs(self, tenant_id: Optional[str] = None) -> List[AuditLog]:
+    def list_audit_logs(
+        self,
+        tenant_id: Optional[str] = None,
+        actor: Optional[str] = None,
+        action: Optional[str] = None,
+        target: Optional[str] = None,
+        start_time: Optional[str] = None,
+        end_time: Optional[str] = None,
+        limit: int = 200,
+    ) -> List[AuditLog]:
         audit_logs = list(self.audit_logs.values())
         if tenant_id:
             audit_logs = [audit for audit in audit_logs if audit.tenant_id == tenant_id]
-        return sorted(audit_logs, key=lambda item: item.created_at, reverse=True)
+        if actor:
+            actor_query = actor.lower()
+            audit_logs = [audit for audit in audit_logs if actor_query in audit.actor.lower()]
+        if action:
+            action_query = action.lower()
+            audit_logs = [audit for audit in audit_logs if action_query in audit.action.lower()]
+        if target:
+            target_query = target.lower()
+            audit_logs = [
+                audit
+                for audit in audit_logs
+                if target_query in audit.target_type.lower()
+                or target_query in audit.target_id.lower()
+                or target_query in str(audit.metadata).lower()
+            ]
+        start_at = _parse_time_filter(start_time)
+        end_at = _parse_time_filter(end_time)
+        if start_at:
+            audit_logs = [
+                audit
+                for audit in audit_logs
+                if (created_at := _parse_time_filter(audit.created_at)) is not None and created_at >= start_at
+            ]
+        if end_at:
+            audit_logs = [
+                audit
+                for audit in audit_logs
+                if (created_at := _parse_time_filter(audit.created_at)) is not None and created_at <= end_at
+            ]
+        bounded_limit = min(max(int(limit or 200), 1), 500)
+        return sorted(audit_logs, key=lambda item: item.created_at, reverse=True)[:bounded_limit]
 
     def create_ticket(self, ticket: Ticket) -> Ticket:
         with self._lock:
@@ -383,6 +434,19 @@ def _pg_vector(value: Sequence[float]) -> Any:
     return Vector(value)
 
 
+def _parse_time_filter(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    normalized = str(value).replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
 class PostgresStore:
     def __init__(
         self,
@@ -516,6 +580,7 @@ class PostgresStore:
         return len(rows)
 
     def add_audit(self, audit: AuditLog) -> AuditLog:
+        audit.metadata = sanitize_for_log(audit.metadata)
         with self._lock, self._connect() as conn:
             row = conn.execute(
                 """
@@ -538,15 +603,45 @@ class PostgresStore:
             ).fetchone()
             return self._audit_from_row(row)
 
-    def list_audit_logs(self, tenant_id: Optional[str] = None) -> List[AuditLog]:
+    def list_audit_logs(
+        self,
+        tenant_id: Optional[str] = None,
+        actor: Optional[str] = None,
+        action: Optional[str] = None,
+        target: Optional[str] = None,
+        start_time: Optional[str] = None,
+        end_time: Optional[str] = None,
+        limit: int = 200,
+    ) -> List[AuditLog]:
+        where: List[str] = []
+        params: List[Any] = []
+        bounded_limit = min(max(int(limit or 200), 1), 500)
+        if tenant_id:
+            where.append("tenant_id = %s")
+            params.append(tenant_id)
+        if actor:
+            where.append("actor ILIKE %s")
+            params.append(f"%{actor}%")
+        if action:
+            where.append("action ILIKE %s")
+            params.append(f"%{action}%")
+        if target:
+            where.append("(target_type ILIKE %s OR target_id ILIKE %s OR metadata::text ILIKE %s)")
+            target_query = f"%{target}%"
+            params.extend([target_query, target_query, target_query])
+        if start_time:
+            where.append("created_at >= %s")
+            params.append(start_time)
+        if end_time:
+            where.append("created_at <= %s")
+            params.append(end_time)
+
+        where_sql = f"WHERE {' AND '.join(where)}" if where else ""
         with self._connect() as conn:
-            if tenant_id:
-                rows = conn.execute(
-                    "SELECT * FROM audit_logs WHERE tenant_id = %s ORDER BY created_at DESC",
-                    (tenant_id,),
-                ).fetchall()
-            else:
-                rows = conn.execute("SELECT * FROM audit_logs ORDER BY created_at DESC").fetchall()
+            rows = conn.execute(
+                f"SELECT * FROM audit_logs {where_sql} ORDER BY created_at DESC LIMIT %s",
+                (*params, bounded_limit),
+            ).fetchall()
             return [self._audit_from_row(row) for row in rows]
 
     def create_ticket(self, ticket: Ticket) -> Ticket:
@@ -786,16 +881,18 @@ class PostgresStore:
             row = conn.execute(
                 """
                 INSERT INTO agent_runs (
-                    id, ticket_id, tenant_id, status, current_node, triage, evidence,
+                    id, ticket_id, tenant_id, trace_id, correlation_id, status, current_node, triage, evidence,
                     verifier_report, final_reply, approval_id, created_at, updated_at
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING *
                 """,
                 (
                     _uuid(run.id),
                     _uuid(run.ticket_id),
                     run.tenant_id,
+                    run.trace_id,
+                    run.correlation_id,
                     run.status,
                     run.current_node,
                     _jsonb(run.triage),
@@ -828,6 +925,8 @@ class PostgresStore:
                 UPDATE agent_runs
                 SET ticket_id = %s,
                     tenant_id = %s,
+                    trace_id = %s,
+                    correlation_id = %s,
                     status = %s,
                     current_node = %s,
                     triage = %s,
@@ -842,6 +941,8 @@ class PostgresStore:
                 (
                     _uuid(run.ticket_id),
                     run.tenant_id,
+                    run.trace_id,
+                    run.correlation_id,
                     run.status,
                     run.current_node,
                     _jsonb(run.triage),
@@ -1097,6 +1198,8 @@ class PostgresStore:
             id=_str_id(row["id"]),
             ticket_id=_str_id(row["ticket_id"]),
             tenant_id=row["tenant_id"],
+            trace_id=row.get("trace_id") or _str_id(row["id"]).replace("-", ""),
+            correlation_id=row.get("correlation_id") or _str_id(row["id"]),
             status=row["status"],
             current_node=row["current_node"],
             triage=row["triage"] or {},

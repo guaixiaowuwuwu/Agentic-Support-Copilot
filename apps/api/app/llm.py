@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Optional, Protocol, Sequence
 
+from .security import redact_secrets
+
 
 PLACEHOLDER_API_KEYS = {"", "replace-me", "changeme", "none", "null"}
 
@@ -142,10 +144,10 @@ class OpenAICompatibleChatClient:
             with urllib.request.urlopen(request, timeout=self.settings.timeout_seconds) as response:
                 data = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")[:300]
+            detail = redact_secrets(exc.read().decode("utf-8", errors="replace"))[:300]
             raise LLMError(f"LLM API returned HTTP {exc.code}: {detail}") from exc
         except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
-            raise LLMError(f"LLM API request failed: {exc}") from exc
+            raise LLMError(f"LLM API request failed: {redact_secrets(exc)}") from exc
 
         try:
             choice = data["choices"][0]

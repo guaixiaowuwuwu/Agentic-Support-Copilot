@@ -301,22 +301,60 @@ class ApiAuthTest(unittest.TestCase):
                 metadata={},
             )
         )
+        self.store.add_audit(
+            AuditLog(
+                tenant_id="acme",
+                actor="tool-agent",
+                action="tool_call_failed",
+                target_type="tool_call",
+                target_id="tool-failed",
+                metadata={"run_id": "run-filter-me", "api_key": "clear-secret", "output_summary": "token=raw-token"},
+                created_at="2026-06-08T01:00:00+00:00",
+            )
+        )
+        self.store.add_audit(
+            AuditLog(
+                tenant_id="acme",
+                actor="system",
+                action="old_audit",
+                target_type="ticket",
+                target_id="old-ticket",
+                metadata={},
+                created_at="2020-01-01T00:00:00+00:00",
+            )
+        )
 
         support_agent_audit = self.client.get(
-            "/api/audit/logs",
+            "/api/audit-logs",
             headers=auth_headers(roles="support_agent", tenant_ids="acme"),
         )
         support_agent_config = self.client.get(
             "/api/admin/config",
             headers=auth_headers(roles="support_agent", tenant_ids="acme"),
         )
-        admin_audit = self.client.get("/api/audit/logs", headers=auth_headers(roles="admin", tenant_ids="acme"))
+        admin_audit = self.client.get("/api/audit-logs", headers=auth_headers(roles="admin", tenant_ids="acme"))
+        filtered_audit = self.client.get(
+            "/api/audit-logs?action=tool_call_failed&actor=tool-agent&target=run-filter-me"
+            "&start_time=2026-01-01T00:00:00%2B00:00&end_time=2026-12-31T23:59:59%2B00:00",
+            headers=auth_headers(roles="admin", tenant_ids="acme"),
+        )
+        legacy_audit = self.client.get(
+            "/api/audit/logs?action=test_audit",
+            headers=auth_headers(roles="admin", tenant_ids="acme"),
+        )
         admin_config = self.client.get("/api/admin/config", headers=auth_headers(roles="admin", tenant_ids="acme"))
 
         self.assertEqual(support_agent_audit.status_code, 403)
         self.assertEqual(support_agent_config.status_code, 403)
         self.assertEqual(admin_audit.status_code, 200)
         self.assertEqual(admin_audit.json()[0]["action"], "test_audit")
+        self.assertEqual(filtered_audit.status_code, 200)
+        self.assertEqual(len(filtered_audit.json()), 1)
+        self.assertEqual(filtered_audit.json()[0]["action"], "tool_call_failed")
+        self.assertEqual(filtered_audit.json()[0]["metadata"]["api_key"], "[REDACTED]")
+        self.assertNotIn("raw-token", str(filtered_audit.json()[0]["metadata"]))
+        self.assertEqual(legacy_audit.status_code, 200)
+        self.assertEqual(legacy_audit.json()[0]["action"], "test_audit")
         self.assertEqual(admin_config.status_code, 200)
         self.assertEqual(admin_config.json()["auth"]["mode"], "local_headers")
 

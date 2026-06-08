@@ -13,6 +13,8 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from .models import Ticket, ToolCall
+from .observability import log_event, set_span_attributes, telemetry_span
+from .security import redact_secrets
 
 try:
     import psycopg
@@ -26,12 +28,6 @@ DEFAULT_ALLOWED_TOOLS = ("log_search", "db_read", "jira_search", "github_search"
 DEFAULT_TOOL_RESULT_LIMIT = 5
 DEFAULT_HTTP_TIMEOUT_SECONDS = 8
 
-SECRET_RE = re.compile(
-    r"(bearer\s+)[a-zA-Z0-9._-]+|"
-    r"(sk-[a-zA-Z0-9_-]+)|"
-    r"((?:api[_-]?key|token|password|secret)\s*[:=]\s*)[^\s,;]+",
-    re.IGNORECASE,
-)
 REQUEST_ID_RE = re.compile(
     r"\b(?:request[_-]?id|req(?:uest)?id)\s*[:=]\s*([a-zA-Z0-9._:-]+)\b",
     re.IGNORECASE,
@@ -69,10 +65,6 @@ class ToolExecutionContext:
 class ToolBackend(Protocol):
     def execute(self, context: ToolExecutionContext) -> str:
         ...
-
-
-def redact_secrets(text: str) -> str:
-    return SECRET_RE.sub(lambda match: f"{match.group(1) or match.group(3) or ''}[REDACTED]", text)
 
 
 def create_tool_registry_from_env() -> "ToolRegistry":
@@ -160,27 +152,48 @@ class ToolRegistry:
         ticket: Ticket,
         triage: Optional[Mapping[str, str]] = None,
     ) -> ToolCall:
-        self.ensure_allowed(tool_name)
-        context = self._context(run_id, tool_name, ticket, triage or {})
-        status = "success"
+        with telemetry_span("tool.call", {"run.id": run_id, "tool.name": tool_name}) as span:
+            self.ensure_allowed(tool_name)
+            context = self._context(run_id, tool_name, ticket, triage or {})
+            status = "success"
 
-        try:
-            backend = self.backends.get(tool_name)
-            output = backend.execute(context) if backend else self._mock_output(tool_name, ticket)
-        except ToolBackendError as exc:
-            status = "failed"
-            output = f"{tool_name} failed: {exc}"
-        except Exception as exc:  # pragma: no cover - defensive guard for third-party SDK/runtime errors.
-            status = "failed"
-            output = f"{tool_name} failed: {exc.__class__.__name__}: {exc}"
+            try:
+                backend = self.backends.get(tool_name)
+                output = backend.execute(context) if backend else self._mock_output(tool_name, ticket)
+            except ToolBackendError as exc:
+                status = "failed"
+                output = f"{tool_name} failed: {redact_secrets(exc)}"
+            except Exception as exc:  # pragma: no cover - defensive guard for third-party SDK/runtime errors.
+                status = "failed"
+                output = f"{tool_name} failed: {exc.__class__.__name__}"
 
-        return ToolCall(
-            run_id=run_id,
-            tool_name=tool_name,
-            status=status,
-            input_summary=context.input_summary,
-            output_summary=_clip(redact_secrets(output), 1000),
-        )
+            call = ToolCall(
+                run_id=run_id,
+                tool_name=tool_name,
+                status=status,
+                input_summary=context.input_summary,
+                output_summary=_clip(redact_secrets(output), 1000),
+            )
+            set_span_attributes(
+                span,
+                {
+                    "tool.status": call.status,
+                    "tool.call_id": call.id,
+                    "tenant.id": ticket.tenant_id,
+                },
+            )
+            log_event(
+                "INFO" if call.status == "success" else "WARNING",
+                "tool_call_completed",
+                run_id=run_id,
+                tool_call_id=call.id,
+                tenant_id=ticket.tenant_id,
+                tool_name=tool_name,
+                status=call.status,
+                input_summary=call.input_summary,
+                output_summary=call.output_summary,
+            )
+            return call
 
     def configured_backends(self) -> List[str]:
         return sorted(self.backends)

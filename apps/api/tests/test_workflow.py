@@ -15,7 +15,7 @@ from app.knowledge import EMBEDDING_DIMENSIONS, KeywordRetriever, VectorRetrieve
 from app.llm import LLMError
 from app.models import Document, Evidence, Ticket
 from app.store import InMemoryStore
-from app.tools import LogSearchTool, ReadOnlyDatabaseTool, ToolPermissionError, ToolRegistry
+from app.tools import LogSearchTool, ReadOnlyDatabaseTool, ToolBackendError, ToolPermissionError, ToolRegistry
 
 
 class FakeChatClient:
@@ -55,6 +55,14 @@ class FakeToolBackend:
         return self.output
 
 
+class FailingToolBackend:
+    def __init__(self, message: str) -> None:
+        self.message = message
+
+    def execute(self, context) -> str:
+        raise ToolBackendError(self.message)
+
+
 class SupportWorkflowTest(unittest.TestCase):
     def test_api_401_ticket_reaches_approval_and_reply(self) -> None:
         store = InMemoryStore(seed=True)
@@ -72,6 +80,8 @@ class SupportWorkflowTest(unittest.TestCase):
         run = workflow.start_run(ticket.id)
 
         self.assertEqual(run.status, "awaiting_approval")
+        self.assertTrue(run.trace_id)
+        self.assertTrue(run.correlation_id)
         self.assertEqual(run.triage["issue_type"], "api_auth")
         self.assertEqual(run.triage["priority"], "P2")
         self.assertTrue(run.evidence)
@@ -89,6 +99,9 @@ class SupportWorkflowTest(unittest.TestCase):
         self.assertTrue(all(call.status == "success" for call in tool_calls))
         audit_actions = [audit.action for audit in store.list_audit_logs("acme")]
         self.assertEqual(audit_actions.count("tool_call_succeeded"), 2)
+        run_audit = next(audit for audit in store.list_audit_logs("acme") if audit.action == "agent_run_started")
+        self.assertEqual(run_audit.metadata["trace_id"], run.trace_id)
+        self.assertEqual(run_audit.metadata["correlation_id"], run.correlation_id)
 
         approval = store.get_approval(run.approval_id or "")
         self.assertEqual(approval.status, "pending")
@@ -282,6 +295,53 @@ class SupportWorkflowTest(unittest.TestCase):
         self.assertEqual(calls[1].tool_name, "db_read")
         audit_actions = [audit.action for audit in store.list_audit_logs("acme")]
         self.assertIn("tool_call_denied", audit_actions)
+
+    def test_tool_success_failure_and_denial_are_audited_with_redacted_summaries(self) -> None:
+        store = InMemoryStore(seed=True)
+        failing_registry = ToolRegistry(
+            allowed_tools=["log_search", "db_read"],
+            backends={
+                "log_search": FakeToolBackend("log search saw bearer live-secret-token"),
+                "db_read": FailingToolBackend("database returned token=stored-secret"),
+            },
+        )
+        workflow = SupportAgentWorkflow(store, tools=failing_registry)
+        ticket = store.create_ticket(
+            Ticket(
+                tenant_id="acme",
+                customer_name="Dana",
+                channel="email",
+                subject="API 401 bearer subject-secret",
+                description="Customer sees API 401. request_id=req_456 token=description-secret",
+            )
+        )
+
+        run = workflow.start_run(ticket.id)
+        calls = store.get_tool_calls_for_run(run.id)
+        audits = store.list_audit_logs("acme")
+        audit_actions = [audit.action for audit in audits]
+
+        self.assertEqual([call.status for call in calls], ["success", "failed"])
+        self.assertIn("tool_call_succeeded", audit_actions)
+        self.assertIn("tool_call_failed", audit_actions)
+        serialized_audit = str([audit.metadata for audit in audits])
+        self.assertNotIn("live-secret-token", serialized_audit)
+        self.assertNotIn("stored-secret", serialized_audit)
+        self.assertNotIn("description-secret", serialized_audit)
+
+        denied_registry = ToolRegistry(allowed_tools=["log_search"])
+        denied_workflow = SupportAgentWorkflow(store, tools=denied_registry)
+        denied_ticket = store.create_ticket(
+            Ticket(
+                tenant_id="acme",
+                customer_name="Eli",
+                channel="email",
+                subject="API 401",
+                description="Customer sees API 401.",
+            )
+        )
+        denied_workflow.start_run(denied_ticket.id)
+        self.assertIn("tool_call_denied", [audit.action for audit in store.list_audit_logs("acme")])
 
     def test_log_search_backend_reads_configured_files_and_redacts_secrets(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

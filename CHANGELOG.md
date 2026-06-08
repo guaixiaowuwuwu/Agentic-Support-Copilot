@@ -2,6 +2,29 @@
 
 > 本日志按每次更新的能力内容分组，不按日期分组。
 
+## 审计追踪与可观测性工作台
+
+### 新增
+- 新增 `GET /api/audit-logs`，支持按 tenant、actor、action、target、开始时间、结束时间和 limit 查询审计记录。
+- 新增 run 级 `trace_id` 和 `correlation_id`，并在 run trace 页面展示，便于从审计记录追溯到完整 agent run。
+- 新增 API request、agent step、tool call 和 LLM call 的 OpenTelemetry span。
+- 新增结构化 JSON 日志输出，所有日志字段和审计 metadata 统一经过脱敏与摘要裁剪。
+- `/audit` 工作台升级为管理员审计查询页面，支持筛选、展示审计摘要，并可从 run / tool / approval 审计记录跳转到对应 trace。
+- 审计记录补齐审批理由、审批决策摘要、工具成功/失败/拒绝状态、知识库写入和 embedding ingestion 摘要。
+
+### 变更
+- 旧 `GET /api/audit/logs` 保留兼容，并复用新的过滤逻辑。
+- 工具调用、LLM 错误和 agent step 日志不再保存 secret、token、API key 等敏感明文。
+- PostgreSQL schema 增加 run trace/correlation 字段和审计查询索引。
+- 前端共享类型、demo 数据和中英文字典同步补齐审计与 trace 字段。
+
+### 验证
+- 后端单元测试通过：`.venv/bin/python -m unittest discover -s apps/api/tests`。
+- 前端 TypeScript no-emit 检查通过：`npm --workspace apps/web exec -- tsc --noEmit`。
+- 前端 production build 通过：`npm --workspace apps/web run build`。
+- Python 编译检查通过：`python3 -m compileall apps/api/app`。
+- 已用 in-app Browser 验证 `/audit` 筛选、审计 trace 跳转和 `/runs/[runId]/trace` 的 trace/correlation 展示。
+
 ## 知识库自助维护第一版
 
 ### 新增

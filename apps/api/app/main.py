@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import os
+import time
 from typing import Any, Optional
+from uuid import uuid4
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from .agents import SupportAgentWorkflow
@@ -26,7 +28,9 @@ from .auth import (
 from .graph import WORKFLOW_NODES, graph_engine_name
 from .llm import create_chat_client_from_env, llm_status_from_env
 from .models import AuditLog, Document, Ticket, to_dict
+from .observability import configure_logging, configure_tracing, log_event, set_span_attributes, telemetry_span
 from .schemas import ApprovalDecisionRequest, CreateDocumentRequest, CreateTicketRequest, IngestEmbeddingsRequest
+from .security import clip_text, redact_secrets
 from .store import NotFoundError, create_store
 from .tools import create_tool_registry_from_env
 
@@ -58,6 +62,8 @@ KNOWLEDGE_DOCUMENT_MAINTENANCE_POLICY = {
 
 store = create_store(seed=True)
 workflow = SupportAgentWorkflow(store, tools=create_tool_registry_from_env(), chat_client=create_chat_client_from_env())
+configure_logging()
+configure_tracing()
 
 app = FastAPI(title="Agentic Support Copilot API", version="0.1.0")
 app.add_middleware(
@@ -67,6 +73,61 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def request_observability(request: Request, call_next):
+    request_correlation_id = request.headers.get("X-Correlation-Id") or str(uuid4())
+    start = time.perf_counter()
+    attributes = {
+        "http.request.method": request.method,
+        "url.path": request.url.path,
+        "request.correlation_id": request_correlation_id,
+    }
+    with telemetry_span("api.request", attributes) as span:
+        try:
+            response = await call_next(request)
+        except Exception as exc:
+            latency_ms = int((time.perf_counter() - start) * 1000)
+            set_span_attributes(
+                span,
+                {
+                    "http.response.status_code": 500,
+                    "http.server.duration_ms": latency_ms,
+                    "error.type": exc.__class__.__name__,
+                },
+            )
+            log_event(
+                "ERROR",
+                "api_request_failed",
+                method=request.method,
+                path=request.url.path,
+                status_code=500,
+                latency_ms=latency_ms,
+                correlation_id=request_correlation_id,
+                error_type=exc.__class__.__name__,
+            )
+            raise
+
+        latency_ms = int((time.perf_counter() - start) * 1000)
+        response.headers["X-Correlation-Id"] = request_correlation_id
+        set_span_attributes(
+            span,
+            {
+                "http.response.status_code": response.status_code,
+                "http.server.duration_ms": latency_ms,
+            },
+        )
+        log_event(
+            "INFO",
+            "api_request_completed",
+            method=request.method,
+            path=request.url.path,
+            status_code=response.status_code,
+            latency_ms=latency_ms,
+            correlation_id=request_correlation_id,
+        )
+        return response
 
 
 def not_found(exc: NotFoundError) -> HTTPException:
@@ -96,6 +157,16 @@ def audit(
             target_id=target_id,
             metadata=metadata or {},
         )
+    )
+    log_event(
+        "INFO",
+        "audit_recorded",
+        tenant_id=tenant_id or principal.tenant_id,
+        actor=principal.email,
+        action=action,
+        target_type=target_type,
+        target_id=target_id,
+        metadata=metadata or {},
     )
 
 
@@ -224,7 +295,19 @@ def start_run(ticket_id: str, principal: Principal = Depends(get_current_princip
     try:
         ticket = assert_ticket_access(ticket_id, principal)
         run = workflow.start_run(ticket.id)
-        audit(principal, "agent_run_requested", "agent_run", run.id, {"ticket_id": ticket.id}, tenant_id=ticket.tenant_id)
+        audit(
+            principal,
+            "agent_run_requested",
+            "agent_run",
+            run.id,
+            {
+                "ticket_id": ticket.id,
+                "trace_id": run.trace_id,
+                "correlation_id": run.correlation_id,
+                "status": run.status,
+            },
+            tenant_id=ticket.tenant_id,
+        )
         return to_dict(run)
     except NotFoundError as exc:
         raise not_found(exc)
@@ -294,7 +377,23 @@ def approve(
         ticket = assert_ticket_access(approval.ticket_id, principal)
         require_role(principal, APPROVAL_DECISION_ROLES, "Approving replies requires approver or admin role")
         run = workflow.approve(approval_id, decided_by=principal.email, note=payload.note or "")
-        audit(principal, "approval_approved_via_api", "approval", approval_id, {"ticket_id": ticket.id}, tenant_id=ticket.tenant_id)
+        decided_approval = store.get_approval(approval_id)
+        audit(
+            principal,
+            "approval_approved_via_api",
+            "approval",
+            approval_id,
+            {
+                "ticket_id": ticket.id,
+                "run_id": run.id,
+                "trace_id": run.trace_id,
+                "correlation_id": run.correlation_id,
+                "approval_reason": decided_approval.reason,
+                "decision_note_summary": clip_text(redact_secrets(decided_approval.decision_note or ""), 400),
+                "decided_at": decided_approval.decided_at,
+            },
+            tenant_id=ticket.tenant_id,
+        )
         return to_dict(run)
     except NotFoundError as exc:
         raise not_found(exc)
@@ -315,7 +414,23 @@ def reject(
         ticket = assert_ticket_access(approval.ticket_id, principal)
         require_role(principal, APPROVAL_DECISION_ROLES, "Rejecting replies requires approver or admin role")
         run = workflow.reject(approval_id, decided_by=principal.email, note=payload.note or "")
-        audit(principal, "approval_rejected_via_api", "approval", approval_id, {"ticket_id": ticket.id}, tenant_id=ticket.tenant_id)
+        decided_approval = store.get_approval(approval_id)
+        audit(
+            principal,
+            "approval_rejected_via_api",
+            "approval",
+            approval_id,
+            {
+                "ticket_id": ticket.id,
+                "run_id": run.id,
+                "trace_id": run.trace_id,
+                "correlation_id": run.correlation_id,
+                "approval_reason": decided_approval.reason,
+                "decision_note_summary": clip_text(redact_secrets(decided_approval.decision_note or ""), 400),
+                "decided_at": decided_approval.decided_at,
+            },
+            tenant_id=ticket.tenant_id,
+        )
         return to_dict(run)
     except NotFoundError as exc:
         raise not_found(exc)
@@ -403,11 +518,76 @@ def get_knowledge_policy(principal: Principal = Depends(get_current_principal)) 
     return KNOWLEDGE_DOCUMENT_MAINTENANCE_POLICY
 
 
-@app.get("/api/audit/logs")
-def list_audit_logs(tenant_id: Optional[str] = None, principal: Principal = Depends(get_current_principal)) -> list:
+def audit_logs_response(
+    *,
+    tenant_id: Optional[str],
+    actor: Optional[str],
+    action: Optional[str],
+    target: Optional[str],
+    start_time: Optional[str],
+    end_time: Optional[str],
+    limit: int,
+    principal: Principal,
+) -> list:
     require_role(principal, ADMIN_ROLES, "Reading audit logs requires admin role")
     requested_tenant_id = resolve_tenant(principal, tenant_id)
-    return to_dict(store.list_audit_logs(tenant_id=requested_tenant_id))
+    return to_dict(
+        store.list_audit_logs(
+            tenant_id=requested_tenant_id,
+            actor=actor,
+            action=action,
+            target=target,
+            start_time=start_time,
+            end_time=end_time,
+            limit=limit,
+        )
+    )
+
+
+@app.get("/api/audit-logs")
+def list_audit_logs(
+    tenant_id: Optional[str] = None,
+    actor: Optional[str] = None,
+    action: Optional[str] = None,
+    target: Optional[str] = None,
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None,
+    limit: int = 200,
+    principal: Principal = Depends(get_current_principal),
+) -> list:
+    return audit_logs_response(
+        tenant_id=tenant_id,
+        actor=actor,
+        action=action,
+        target=target,
+        start_time=start_time,
+        end_time=end_time,
+        limit=limit,
+        principal=principal,
+    )
+
+
+@app.get("/api/audit/logs")
+def list_audit_logs_legacy(
+    tenant_id: Optional[str] = None,
+    actor: Optional[str] = None,
+    action: Optional[str] = None,
+    target: Optional[str] = None,
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None,
+    limit: int = 200,
+    principal: Principal = Depends(get_current_principal),
+) -> list:
+    return audit_logs_response(
+        tenant_id=tenant_id,
+        actor=actor,
+        action=action,
+        target=target,
+        start_time=start_time,
+        end_time=end_time,
+        limit=limit,
+        principal=principal,
+    )
 
 
 @app.get("/api/admin/config")

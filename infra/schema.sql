@@ -19,6 +19,8 @@ CREATE TABLE IF NOT EXISTS agent_runs (
   id UUID PRIMARY KEY,
   ticket_id UUID NOT NULL REFERENCES tickets(id),
   tenant_id TEXT NOT NULL,
+  trace_id TEXT NOT NULL DEFAULT md5(random()::text || clock_timestamp()::text),
+  correlation_id TEXT NOT NULL DEFAULT md5(random()::text || clock_timestamp()::text),
   status TEXT NOT NULL,
   current_node TEXT NOT NULL,
   triage JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -32,6 +34,26 @@ CREATE TABLE IF NOT EXISTS agent_runs (
 
 ALTER TABLE agent_runs
   ADD COLUMN IF NOT EXISTS evidence JSONB NOT NULL DEFAULT '[]'::jsonb;
+
+ALTER TABLE agent_runs
+  ADD COLUMN IF NOT EXISTS trace_id TEXT;
+
+ALTER TABLE agent_runs
+  ADD COLUMN IF NOT EXISTS correlation_id TEXT;
+
+UPDATE agent_runs
+SET trace_id = replace(id::text, '-', '')
+WHERE trace_id IS NULL OR trace_id = '';
+
+UPDATE agent_runs
+SET correlation_id = id::text
+WHERE correlation_id IS NULL OR correlation_id = '';
+
+ALTER TABLE agent_runs
+  ALTER COLUMN trace_id SET DEFAULT md5(random()::text || clock_timestamp()::text),
+  ALTER COLUMN trace_id SET NOT NULL,
+  ALTER COLUMN correlation_id SET DEFAULT md5(random()::text || clock_timestamp()::text),
+  ALTER COLUMN correlation_id SET NOT NULL;
 
 CREATE TABLE IF NOT EXISTS agent_steps (
   id UUID PRIMARY KEY,
@@ -83,6 +105,8 @@ ALTER TABLE document_chunks
 CREATE INDEX IF NOT EXISTS idx_document_chunks_tenant ON document_chunks(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_document_chunks_embedding ON document_chunks USING ivfflat (embedding vector_cosine_ops);
 CREATE INDEX IF NOT EXISTS idx_agent_runs_ticket ON agent_runs(ticket_id);
+CREATE INDEX IF NOT EXISTS idx_agent_runs_trace_id ON agent_runs(trace_id);
+CREATE INDEX IF NOT EXISTS idx_agent_runs_correlation_id ON agent_runs(correlation_id);
 CREATE INDEX IF NOT EXISTS idx_agent_steps_run ON agent_steps(run_id);
 
 CREATE TABLE IF NOT EXISTS tool_calls (
@@ -125,3 +149,8 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+CREATE INDEX IF NOT EXISTS idx_audit_logs_tenant_created ON audit_logs(tenant_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_actor ON audit_logs(actor);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_action ON audit_logs(action);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_target ON audit_logs(target_type, target_id);

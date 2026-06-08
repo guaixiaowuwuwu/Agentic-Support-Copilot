@@ -7,9 +7,11 @@ from typing import Any, Dict, Iterable, List, Optional
 from .knowledge import Retriever, create_default_retriever
 from .llm import ChatClient, LLMError
 from .models import AgentRun, AgentStep, Approval, AuditLog, Evidence, Ticket, ToolCall
+from .observability import log_event, set_span_attributes, telemetry_span
+from .security import clip_text, redact_secrets
 from .store import Store
 from .time_utils import utc_now
-from .tools import ToolPermissionError, ToolRegistry, redact_secrets
+from .tools import ToolPermissionError, ToolRegistry
 
 
 @contextmanager
@@ -42,85 +44,102 @@ class SupportAgentWorkflow:
     def start_run(self, ticket_id: str) -> AgentRun:
         ticket = self.store.get_ticket(ticket_id)
         run = self.store.create_run(AgentRun(ticket_id=ticket.id, tenant_id=ticket.tenant_id, status="running"))
-        self._audit(ticket.tenant_id, "system", "agent_run_started", "agent_run", run.id, {"ticket_id": ticket.id})
-
-        triage = self._triage(ticket)
-        run.triage = triage
-        run.status = "running"
-        ticket.priority = triage["priority"]
-        ticket.issue_type = triage["issue_type"]
-        ticket.status = "triaged"
-        self.store.update_ticket(ticket)
-        self.store.update_run(run)
-        self._record_step(
-            run,
-            "triage",
-            "success",
-            f"{triage['issue_type']} classified as {triage['priority']} with {triage['risk_level']} risk.",
-            ticket.subject,
-            ticket.description,
-        )
-
-        with measure_step() as metric:
-            chunks = None if self.retriever.uses_store_backend else self.store.list_chunks()
-            evidence = self.retriever.search(ticket.tenant_id, f"{ticket.subject} {ticket.description}", chunks)
-        run.evidence = evidence
-        self.store.update_run(run)
-        self._record_step(
-            run,
-            "retrieval",
-            "success" if evidence else "blocked",
-            f"Found {len(evidence)} tenant-scoped evidence chunks.",
-            ticket.subject,
-            latency_ms=metric["latency_ms"],
-            evidence_ids=[item.chunk_id for item in evidence],
-        )
-
-        tool_calls = self._execute_optional_tools(run, ticket, triage)
-        draft_reply = self._compose_reply(ticket, triage, evidence, tool_calls)
-
-        verifier_report = self._verify(draft_reply, evidence, triage)
-        run.verifier_report = verifier_report
-        self.store.update_run(run)
-        self._record_step(
-            run,
-            "verifier",
-            "success" if verifier_report["passed"] else "blocked",
-            verifier_report["summary"],
-            draft_reply,
-            evidence_ids=[item.chunk_id for item in evidence],
-        )
-
-        action_type = "send_reply" if verifier_report["passed"] else "manual_review"
-        approval_reason = (
-            "Customer-facing reply requires approval."
-            if verifier_report["passed"]
-            else "Verifier requires a human to review missing evidence or policy concerns."
-        )
-        approval = self.store.create_approval(
-            Approval(
-                run_id=run.id,
-                ticket_id=ticket.id,
-                action_type=action_type,
-                proposed_reply=draft_reply,
-                risk_level=triage["risk_level"],
-                reason=approval_reason,
+        with telemetry_span(
+            "agent.run",
+            {
+                "run.id": run.id,
+                "run.trace_id": run.trace_id,
+                "run.correlation_id": run.correlation_id,
+                "ticket.id": ticket.id,
+                "tenant.id": ticket.tenant_id,
+            },
+        ):
+            self._audit(
+                ticket.tenant_id,
+                "system",
+                "agent_run_started",
+                "agent_run",
+                run.id,
+                self._run_metadata(run, ticket),
             )
-        )
-        run.approval_id = approval.id
-        run.status = "awaiting_approval"
-        run.current_node = "human_approval"
-        ticket.status = "awaiting_approval"
-        self.store.update_run(run)
-        self.store.update_ticket(ticket)
-        self._record_step(
-            run,
-            "human_approval",
-            "blocked",
-            f"Created {action_type} approval {approval.id}.",
-            draft_reply,
-        )
-        return self.store.get_run(run.id)
+
+            triage = self._triage(ticket)
+            run.triage = triage
+            run.status = "running"
+            ticket.priority = triage["priority"]
+            ticket.issue_type = triage["issue_type"]
+            ticket.status = "triaged"
+            self.store.update_ticket(ticket)
+            self.store.update_run(run)
+            self._record_step(
+                run,
+                "triage",
+                "success",
+                f"{triage['issue_type']} classified as {triage['priority']} with {triage['risk_level']} risk.",
+                ticket.subject,
+                ticket.description,
+            )
+
+            with measure_step() as metric:
+                chunks = None if self.retriever.uses_store_backend else self.store.list_chunks()
+                evidence = self.retriever.search(ticket.tenant_id, f"{ticket.subject} {ticket.description}", chunks)
+            run.evidence = evidence
+            self.store.update_run(run)
+            self._record_step(
+                run,
+                "retrieval",
+                "success" if evidence else "blocked",
+                f"Found {len(evidence)} tenant-scoped evidence chunks.",
+                ticket.subject,
+                latency_ms=metric["latency_ms"],
+                evidence_ids=[item.chunk_id for item in evidence],
+            )
+
+            tool_calls = self._execute_optional_tools(run, ticket, triage)
+            draft_reply = self._compose_reply(run, ticket, triage, evidence, tool_calls)
+
+            verifier_report = self._verify(draft_reply, evidence, triage)
+            run.verifier_report = verifier_report
+            self.store.update_run(run)
+            self._record_step(
+                run,
+                "verifier",
+                "success" if verifier_report["passed"] else "blocked",
+                verifier_report["summary"],
+                draft_reply,
+                evidence_ids=[item.chunk_id for item in evidence],
+            )
+
+            action_type = "send_reply" if verifier_report["passed"] else "manual_review"
+            approval_reason = (
+                "Customer-facing reply requires approval."
+                if verifier_report["passed"]
+                else "Verifier requires a human to review missing evidence or policy concerns."
+            )
+            approval = self.store.create_approval(
+                Approval(
+                    run_id=run.id,
+                    ticket_id=ticket.id,
+                    action_type=action_type,
+                    proposed_reply=draft_reply,
+                    risk_level=triage["risk_level"],
+                    reason=approval_reason,
+                )
+            )
+            run.approval_id = approval.id
+            run.status = "awaiting_approval"
+            run.current_node = "human_approval"
+            ticket.status = "awaiting_approval"
+            self.store.update_run(run)
+            self.store.update_ticket(ticket)
+            self._record_step(
+                run,
+                "human_approval",
+                "blocked",
+                f"Created {action_type} approval {approval.id}.",
+                draft_reply,
+            )
+            return self.store.get_run(run.id)
 
     def approve(self, approval_id: str, decided_by: str = "support.lead", note: str = "") -> AgentRun:
         approval = self.store.get_approval(approval_id)
@@ -149,7 +168,14 @@ class SupportAgentWorkflow:
             "Approved reply recorded and ticket marked as replied.",
             approval.proposed_reply,
         )
-        self._audit(ticket.tenant_id, decided_by, "approval_approved", "approval", approval.id, {"run_id": run.id})
+        self._audit(
+            ticket.tenant_id,
+            decided_by,
+            "approval_approved",
+            "approval",
+            approval.id,
+            self._approval_metadata(run, ticket, approval),
+        )
         return self.store.get_run(run.id)
 
     def reject(self, approval_id: str, decided_by: str = "support.lead", note: str = "") -> AgentRun:
@@ -171,7 +197,14 @@ class SupportAgentWorkflow:
         self.store.update_run(run)
         self.store.update_ticket(ticket)
         self._record_step(run, "human_approval", "blocked", f"Approval rejected: {note or 'no note'}", note)
-        self._audit(ticket.tenant_id, decided_by, "approval_rejected", "approval", approval.id, {"run_id": run.id})
+        self._audit(
+            ticket.tenant_id,
+            decided_by,
+            "approval_rejected",
+            "approval",
+            approval.id,
+            self._approval_metadata(run, ticket, approval),
+        )
         return self.store.get_run(run.id)
 
     def _triage(self, ticket: Ticket) -> Dict[str, str]:
@@ -243,6 +276,7 @@ class SupportAgentWorkflow:
 
     def _compose_reply(
         self,
+        run: AgentRun,
         ticket: Ticket,
         triage: Dict[str, str],
         evidence: List[Evidence],
@@ -253,12 +287,40 @@ class SupportAgentWorkflow:
             return fallback_reply
 
         try:
-            llm_reply = self.chat_client.complete(
-                self._reply_messages(ticket, triage, evidence, tool_calls),
-                temperature=0.2,
-                max_tokens=700,
-            )
+            with telemetry_span(
+                "llm.call",
+                {
+                    "run.id": run.id,
+                    "run.trace_id": run.trace_id,
+                    "run.correlation_id": run.correlation_id,
+                    "tenant.id": ticket.tenant_id,
+                },
+            ) as span:
+                llm_reply = self.chat_client.complete(
+                    self._reply_messages(ticket, triage, evidence, tool_calls),
+                    temperature=0.2,
+                    max_tokens=700,
+                )
+                set_span_attributes(span, {"llm.status": "success"})
+                log_event(
+                    "INFO",
+                    "llm_call_completed",
+                    run_id=run.id,
+                    trace_id=run.trace_id,
+                    correlation_id=run.correlation_id,
+                    tenant_id=ticket.tenant_id,
+                    status="success",
+                )
         except LLMError:
+            log_event(
+                "WARNING",
+                "llm_call_completed",
+                run_id=run.id,
+                trace_id=run.trace_id,
+                correlation_id=run.correlation_id,
+                tenant_id=ticket.tenant_id,
+                status="failed",
+            )
             return fallback_reply
 
         return self._normalize_llm_reply(llm_reply, evidence, fallback_reply)
@@ -392,18 +454,56 @@ class SupportAgentWorkflow:
         evidence_ids: Optional[List[str]] = None,
         tool_call_ids: Optional[List[str]] = None,
     ) -> AgentStep:
-        run.current_node = name
-        step = AgentStep(
-            run_id=run.id,
-            name=name,
-            status=status,
-            summary=summary,
-            latency_ms=0 if latency_ms is None else latency_ms,
-            token_count=estimate_tokens(summary, *token_parts),
-            evidence_ids=evidence_ids or [],
-            tool_call_ids=tool_call_ids or [],
-        )
-        return self.store.add_step(step)
+        with telemetry_span(
+            "agent.step",
+            {
+                "run.id": run.id,
+                "run.trace_id": run.trace_id,
+                "run.correlation_id": run.correlation_id,
+                "tenant.id": run.tenant_id,
+                "agent.step.name": name,
+            },
+        ) as span:
+            run.current_node = name
+            step = AgentStep(
+                run_id=run.id,
+                name=name,
+                status=status,
+                summary=clip_text(redact_secrets(summary), 1000),
+                latency_ms=0 if latency_ms is None else latency_ms,
+                token_count=estimate_tokens(summary, *token_parts),
+                evidence_ids=evidence_ids or [],
+                tool_call_ids=tool_call_ids or [],
+            )
+            recorded = self.store.add_step(step)
+            set_span_attributes(
+                span,
+                {
+                    "agent.step.id": recorded.id,
+                    "agent.step.status": recorded.status,
+                    "agent.step.latency_ms": recorded.latency_ms,
+                    "agent.step.token_count": recorded.token_count,
+                    "agent.step.evidence_count": len(recorded.evidence_ids),
+                    "agent.step.tool_call_count": len(recorded.tool_call_ids),
+                },
+            )
+            log_event(
+                "INFO" if status == "success" else "WARNING",
+                "agent_step_completed",
+                run_id=run.id,
+                trace_id=run.trace_id,
+                correlation_id=run.correlation_id,
+                tenant_id=run.tenant_id,
+                step_id=recorded.id,
+                step_name=name,
+                status=status,
+                latency_ms=recorded.latency_ms,
+                token_count=recorded.token_count,
+                evidence_ids=recorded.evidence_ids,
+                tool_call_ids=recorded.tool_call_ids,
+                summary=recorded.summary,
+            )
+            return recorded
 
     def _audit(
         self,
@@ -426,6 +526,7 @@ class SupportAgentWorkflow:
         )
 
     def _audit_tool_call(self, ticket: Ticket, call: ToolCall) -> None:
+        run = self.store.get_run(call.run_id)
         action_by_status = {
             "success": "tool_call_succeeded",
             "failed": "tool_call_failed",
@@ -440,9 +541,44 @@ class SupportAgentWorkflow:
             {
                 "run_id": call.run_id,
                 "ticket_id": ticket.id,
+                "trace_id": run.trace_id,
+                "correlation_id": run.correlation_id,
                 "tool_name": call.tool_name,
                 "status": call.status,
                 "input_summary": call.input_summary,
                 "output_summary": call.output_summary,
             },
         )
+        log_event(
+            "INFO" if call.status == "success" else "WARNING",
+            "tool_call_audited",
+            run_id=call.run_id,
+            tool_call_id=call.id,
+            trace_id=run.trace_id,
+            correlation_id=run.correlation_id,
+            tenant_id=ticket.tenant_id,
+            tool_name=call.tool_name,
+            status=call.status,
+        )
+
+    def _run_metadata(self, run: AgentRun, ticket: Ticket) -> Dict[str, Any]:
+        return {
+            "ticket_id": ticket.id,
+            "trace_id": run.trace_id,
+            "correlation_id": run.correlation_id,
+            "status": run.status,
+        }
+
+    def _approval_metadata(self, run: AgentRun, ticket: Ticket, approval: Approval) -> Dict[str, Any]:
+        return {
+            "run_id": run.id,
+            "ticket_id": ticket.id,
+            "trace_id": run.trace_id,
+            "correlation_id": run.correlation_id,
+            "approval_status": approval.status,
+            "action_type": approval.action_type,
+            "risk_level": approval.risk_level,
+            "approval_reason": approval.reason,
+            "decision_note_summary": clip_text(redact_secrets(approval.decision_note or ""), 400),
+            "decided_at": approval.decided_at,
+        }

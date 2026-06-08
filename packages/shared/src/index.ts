@@ -75,6 +75,8 @@ export interface AgentRun {
   id: string;
   ticket_id: string;
   tenant_id: string;
+  trace_id: string;
+  correlation_id: string;
   status: string;
   current_node: string;
   triage: Record<string, string>;

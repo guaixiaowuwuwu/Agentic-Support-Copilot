@@ -219,8 +219,49 @@ export const demoAuditLogs: AuditLog[] = [
     action: "approval_approved_via_api",
     target_type: "approval",
     target_id: "demo-approval-api-401",
-    metadata: { ticket_id: "demo-ticket-api-401" },
+    metadata: {
+      ticket_id: "demo-ticket-api-401",
+      run_id: "demo-run-api-401",
+      trace_id: "demo-trace-api-401",
+      correlation_id: "demo-correlation-api-401",
+      approval_reason: "Customer-facing reply requires approval.",
+      decision_note_summary: "Approved from dashboard"
+    },
     created_at: new Date(Date.now() - 1000 * 60 * 6).toISOString()
+  },
+  {
+    id: "demo-audit-tool",
+    tenant_id: "acme",
+    actor: "system",
+    action: "tool_call_succeeded",
+    target_type: "tool_call",
+    target_id: "tool-log",
+    metadata: {
+      run_id: "demo-run-api-401",
+      ticket_id: "demo-ticket-api-401",
+      trace_id: "demo-trace-api-401",
+      correlation_id: "demo-correlation-api-401",
+      tool_name: "log_search",
+      status: "success",
+      input_summary: "API returns 401 :: request_id=req_123",
+      output_summary: "Read-only log search completed. Auth service shows repeated 401 responses."
+    },
+    created_at: new Date(Date.now() - 1000 * 60 * 8).toISOString()
+  },
+  {
+    id: "demo-audit-run",
+    tenant_id: "acme",
+    actor: "system",
+    action: "agent_run_started",
+    target_type: "agent_run",
+    target_id: "demo-run-api-401",
+    metadata: {
+      ticket_id: "demo-ticket-api-401",
+      trace_id: "demo-trace-api-401",
+      correlation_id: "demo-correlation-api-401",
+      status: "running"
+    },
+    created_at: new Date(Date.now() - 1000 * 60 * 10).toISOString()
   }
 ];
 
@@ -248,6 +289,8 @@ export const demoTrace: RunTrace = {
     id: "demo-run-api-401",
     ticket_id: "demo-ticket-api-401",
     tenant_id: "acme",
+    trace_id: "demo-trace-api-401",
+    correlation_id: "demo-correlation-api-401",
     status: "awaiting_approval",
     current_node: "human_approval",
     triage: {

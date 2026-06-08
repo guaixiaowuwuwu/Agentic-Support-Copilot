@@ -79,6 +79,14 @@ export default async function RunTracePage({ params }: { params: Promise<{ runId
             {dict.common.run} {compactId(trace.run.id)}
           </p>
           <h1>{dict.trace.title}</h1>
+          <div className="id-row">
+            <span>
+              {dict.trace.traceId}: {compactId(trace.run.trace_id)}
+            </span>
+            <span>
+              {dict.trace.correlationId}: {compactId(trace.run.correlation_id)}
+            </span>
+          </div>
         </div>
         <StatusBadge value={trace.run.status} locale={locale} />
       </section>

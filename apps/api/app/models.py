@@ -112,6 +112,8 @@ class AgentRun:
     ticket_id: str
     tenant_id: str
     id: str = field(default_factory=new_id)
+    trace_id: str = field(default_factory=lambda: uuid4().hex)
+    correlation_id: str = field(default_factory=new_id)
     status: str = "queued"
     current_node: str = "created"
     triage: Dict[str, Any] = field(default_factory=dict)
