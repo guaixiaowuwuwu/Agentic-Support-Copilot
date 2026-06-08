@@ -36,7 +36,9 @@ class Document:
     uri: str
     content: str
     id: str = field(default_factory=new_id)
+    status: str = "active"
     created_at: str = field(default_factory=utc_now)
+    updated_at: str = field(default_factory=utc_now)
 
 
 @dataclass

@@ -69,10 +69,13 @@ class Store(Protocol):
     def update_ticket(self, ticket: Ticket) -> Ticket:
         ...
 
-    def add_document(self, document: Document) -> Document:
+    def add_document(self, document: Document, *, embed: bool = True) -> Document:
         ...
 
     def list_documents(self, tenant_id: Optional[str] = None) -> List[Document]:
+        ...
+
+    def get_document(self, document_id: str) -> Document:
         ...
 
     def list_chunks(self) -> List[DocumentChunk]:
@@ -224,11 +227,12 @@ class InMemoryStore:
             self.tickets[ticket.id] = ticket
         return ticket
 
-    def add_document(self, document: Document) -> Document:
+    def add_document(self, document: Document, *, embed: bool = True) -> Document:
         with self._lock:
             self.documents[document.id] = document
             for chunk in chunk_document(document):
-                embed_chunk(chunk, self.embedding_model)
+                if embed:
+                    embed_chunk(chunk, self.embedding_model)
                 self.chunks[chunk.id] = chunk
         return document
 
@@ -237,6 +241,12 @@ class InMemoryStore:
         if tenant_id:
             documents = [document for document in documents if document.tenant_id == tenant_id]
         return sorted(documents, key=lambda item: item.created_at, reverse=True)
+
+    def get_document(self, document_id: str) -> Document:
+        try:
+            return self.documents[document_id]
+        except KeyError as exc:
+            raise NotFoundError(document_id) from exc
 
     def list_chunks(self) -> List[DocumentChunk]:
         return list(self.chunks.values())
@@ -397,6 +407,7 @@ class PostgresStore:
         if seed:
             self.seed()
         if ensure_schema:
+            self.ensure_document_chunks()
             self.ingest_missing_embeddings()
 
     def _connect(self, register_vectors: bool = True) -> Any:
@@ -464,6 +475,45 @@ class PostgresStore:
                 content="Globex-only private API outage details. This document must never appear in Acme searches.",
             )
         )
+
+    def ensure_document_chunks(self) -> int:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT d.*
+                FROM documents d
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM document_chunks c WHERE c.document_id = d.id
+                )
+                ORDER BY d.created_at ASC
+                """
+            ).fetchall()
+
+            for row in rows:
+                document = self._document_from_row(row)
+                for chunk in chunk_document(document):
+                    embed_chunk(chunk, self.embedding_model)
+                    conn.execute(
+                        """
+                        INSERT INTO document_chunks (
+                            id, document_id, tenant_id, title, source_type, uri, content, chunk_index,
+                            embedding
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        """,
+                        (
+                            _uuid(chunk.id),
+                            _uuid(chunk.document_id),
+                            chunk.tenant_id,
+                            chunk.title,
+                            chunk.source_type,
+                            chunk.uri,
+                            chunk.content,
+                            chunk.chunk_index,
+                            _pg_vector(chunk.embedding or []),
+                        ),
+                    )
+        return len(rows)
 
     def add_audit(self, audit: AuditLog) -> AuditLog:
         with self._lock, self._connect() as conn:
@@ -582,16 +632,19 @@ class PostgresStore:
                 raise NotFoundError(ticket.id)
             return self._ticket_from_row(conn, row)
 
-    def add_document(self, document: Document) -> Document:
+    def add_document(self, document: Document, *, embed: bool = True) -> Document:
         chunks = chunk_document(document)
-        for chunk in chunks:
-            embed_chunk(chunk, self.embedding_model)
+        if embed:
+            for chunk in chunks:
+                embed_chunk(chunk, self.embedding_model)
 
         with self._lock, self._connect() as conn:
             row = conn.execute(
                 """
-                INSERT INTO documents (id, tenant_id, title, source_type, uri, content, created_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                INSERT INTO documents (
+                    id, tenant_id, title, source_type, uri, content, status, created_at, updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING *
                 """,
                 (
@@ -601,7 +654,9 @@ class PostgresStore:
                     document.source_type,
                     document.uri,
                     document.content,
+                    document.status,
                     document.created_at,
+                    document.updated_at,
                 ),
             ).fetchone()
             for chunk in chunks:
@@ -622,7 +677,7 @@ class PostgresStore:
                         chunk.uri,
                         chunk.content,
                         chunk.chunk_index,
-                        _pg_vector(chunk.embedding or []),
+                        _pg_vector(chunk.embedding) if chunk.embedding else None,
                     ),
                 )
             return self._document_from_row(row)
@@ -637,6 +692,13 @@ class PostgresStore:
             else:
                 rows = conn.execute("SELECT * FROM documents ORDER BY created_at DESC").fetchall()
             return [self._document_from_row(row) for row in rows]
+
+    def get_document(self, document_id: str) -> Document:
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM documents WHERE id = %s", (_uuid(document_id),)).fetchone()
+            if row is None:
+                raise NotFoundError(document_id)
+            return self._document_from_row(row)
 
     def list_chunks(self) -> List[DocumentChunk]:
         with self._connect() as conn:
@@ -1003,7 +1065,9 @@ class PostgresStore:
             source_type=row["source_type"],
             uri=row["uri"],
             content=row["content"],
+            status=row.get("status") or "active",
             created_at=_iso(row["created_at"]) or utc_now(),
+            updated_at=_iso(row.get("updated_at")) or _iso(row["created_at"]) or utc_now(),
         )
 
     def _chunk_from_row(self, row: Dict[str, Any]) -> DocumentChunk:

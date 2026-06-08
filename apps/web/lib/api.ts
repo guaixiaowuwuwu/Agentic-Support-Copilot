@@ -202,7 +202,12 @@ export const demoDocuments: Document[] = [
     uri: "kb://api/authentication-runbook",
     content:
       "401 Unauthorized responses are usually caused by a missing Authorization header, expired token, invalid API key, or insufficient OAuth scope.",
-    created_at: new Date(Date.now() - 1000 * 60 * 60 * 24).toISOString()
+    status: "active",
+    created_at: new Date(Date.now() - 1000 * 60 * 60 * 24).toISOString(),
+    updated_at: new Date(Date.now() - 1000 * 60 * 60 * 24).toISOString(),
+    chunk_count: 1,
+    embedded_chunk_count: 1,
+    embedding_status: "embedded"
   }
 ];
 

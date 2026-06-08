@@ -207,32 +207,76 @@ class ApiAuthTest(unittest.TestCase):
             headers=auth_headers(roles="support_agent"),
             json={
                 "tenant_id": "acme",
-                "title": "Internal Auth Runbook",
+                "title": "SAML Connector Drift Runbook",
                 "uri": "kb://acme/internal-auth",
-                "content": "Internal authentication troubleshooting.",
+                "content": "SAML connector drift requires checking entity ID and certificate thumbprint.",
             },
         )
         self.assertEqual(support_agent_response.status_code, 403)
+
+        support_agent_ingest_response = self.client.post(
+            "/api/knowledge/embeddings/ingest",
+            headers=auth_headers(roles="support_agent"),
+            json={"tenant_id": "acme"},
+        )
+        self.assertEqual(support_agent_ingest_response.status_code, 403)
 
         admin_response = self.client.post(
             "/api/knowledge/documents",
             headers=auth_headers(roles="knowledge_admin", tenant_ids="acme"),
             json={
                 "tenant_id": "acme",
-                "title": "Internal Auth Runbook",
-                "uri": "kb://acme/internal-auth",
-                "content": "Internal authentication troubleshooting.",
+                "title": "SAML Connector Drift Runbook",
+                "source_type": "runbook",
+                "uri": "kb://acme/saml-connector-drift",
+                "content": (
+                    "SAML connector drift requires checking entity ID, assertion consumer service URL, "
+                    "and certificate thumbprint before asking the customer to retry login."
+                ),
             },
         )
 
         self.assertEqual(admin_response.status_code, 200)
         self.assertEqual(admin_response.json()["tenant_id"], "acme")
+        self.assertEqual(admin_response.json()["embedding_status"], "pending")
+        self.assertGreater(admin_response.json()["chunk_count"], 0)
 
         knowledge_list_response = self.client.get(
             "/api/knowledge/documents",
             headers=auth_headers(roles="knowledge_admin", tenant_ids="acme"),
         )
         self.assertEqual(knowledge_list_response.status_code, 200)
+        imported_document = next(
+            document for document in knowledge_list_response.json() if document["id"] == admin_response.json()["id"]
+        )
+        self.assertEqual(imported_document["embedded_chunk_count"], 0)
+        self.assertEqual(imported_document["source_type"], "runbook")
+
+        detail_response = self.client.get(
+            f"/api/knowledge/documents/{admin_response.json()['id']}",
+            headers=auth_headers(roles="knowledge_admin", tenant_ids="acme"),
+        )
+        self.assertEqual(detail_response.status_code, 200)
+        self.assertEqual(detail_response.json()["chunks"][0]["embedding_status"], "pending")
+
+        ingest_response = self.client.post(
+            "/api/knowledge/embeddings/ingest",
+            headers=auth_headers(roles="knowledge_admin", tenant_ids="acme"),
+            json={"tenant_id": "acme"},
+        )
+        self.assertEqual(ingest_response.status_code, 200)
+        self.assertEqual(ingest_response.json()["embedding_status"], "embedded")
+        self.assertGreaterEqual(ingest_response.json()["updated_chunks"], imported_document["chunk_count"])
+
+        ticket = self.create_ticket("acme", subject="SAML connector drift")
+        ticket.description = "Customer login fails after SAML connector drift. Please check entity ID and thumbprint."
+        self.store.update_ticket(ticket)
+        run = api_main.workflow.start_run(ticket.id)
+        self.assertTrue(any(evidence.title == "SAML Connector Drift Runbook" for evidence in run.evidence))
+
+        audit_actions = [audit.action for audit in self.store.list_audit_logs("acme")]
+        self.assertIn("document_created", audit_actions)
+        self.assertIn("embeddings_ingested", audit_actions)
 
         spoof_response = self.client.post(
             "/api/knowledge/documents",

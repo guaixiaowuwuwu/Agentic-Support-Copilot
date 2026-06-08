@@ -209,7 +209,9 @@ class VectorRetriever:
         for chunk in chunks:
             if chunk.tenant_id != tenant_id:
                 continue
-            chunk_embedding = chunk.embedding or self.embedding_model.embed(embedding_text_for_chunk(chunk))
+            if not chunk.embedding:
+                continue
+            chunk_embedding = chunk.embedding
             score = cosine_similarity(query_embedding, chunk_embedding)
             if score < self.min_score:
                 continue

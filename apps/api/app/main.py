@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -29,6 +29,32 @@ from .models import AuditLog, Document, Ticket, to_dict
 from .schemas import ApprovalDecisionRequest, CreateDocumentRequest, CreateTicketRequest, IngestEmbeddingsRequest
 from .store import NotFoundError, create_store
 from .tools import create_tool_registry_from_env
+
+KNOWLEDGE_DOCUMENT_MAINTENANCE_POLICY = {
+    "first_version": (
+        "Documents imported through the API are immutable after creation; edits, retirement, deletion, "
+        "versioning, review, batch import, and hit analytics are deferred."
+    ),
+    "update_strategy": (
+        "Future document updates should create a new auditable version, regenerate chunks with pending "
+        "embeddings, and keep the previous version available for trace history."
+    ),
+    "retirement_strategy": (
+        "Future retirement should mark a document non-active, exclude its chunks from retrieval, and "
+        "preserve historical audit and run trace references."
+    ),
+    "delete_strategy": (
+        "Future deletion should be soft-delete by default, require an admin-level retention decision "
+        "for hard deletion, and always leave an audit entry."
+    ),
+    "audited_actions": [
+        "document_created",
+        "document_updated",
+        "document_retired",
+        "document_deleted",
+        "embeddings_ingested",
+    ],
+}
 
 store = create_store(seed=True)
 workflow = SupportAgentWorkflow(store, tools=create_tool_registry_from_env(), chat_client=create_chat_client_from_env())
@@ -77,6 +103,65 @@ def assert_ticket_access(ticket_id: str, principal: Principal) -> Ticket:
     ticket = store.get_ticket(ticket_id)
     require_tenant_access(principal, ticket.tenant_id, hide=True)
     return ticket
+
+
+def _embedding_status(chunk_count: int, embedded_chunk_count: int) -> str:
+    if chunk_count == 0:
+        return "empty"
+    if embedded_chunk_count == 0:
+        return "pending"
+    if embedded_chunk_count == chunk_count:
+        return "embedded"
+    return "partial"
+
+
+def _chunks_for_document(document_id: str) -> list:
+    return [chunk for chunk in store.list_chunks() if chunk.document_id == document_id]
+
+
+def _chunks_for_tenant(tenant_id: str) -> list:
+    return [chunk for chunk in store.list_chunks() if chunk.tenant_id == tenant_id]
+
+
+def knowledge_document_response(document: Document, *, include_chunks: bool = False) -> dict[str, Any]:
+    chunks = _chunks_for_document(document.id)
+    embedded_chunk_count = sum(1 for chunk in chunks if chunk.embedding)
+    payload = to_dict(document)
+    payload.update(
+        {
+            "chunk_count": len(chunks),
+            "embedded_chunk_count": embedded_chunk_count,
+            "embedding_status": _embedding_status(len(chunks), embedded_chunk_count),
+        }
+    )
+    if include_chunks:
+        payload["chunks"] = [
+            {
+                "id": chunk.id,
+                "document_id": chunk.document_id,
+                "tenant_id": chunk.tenant_id,
+                "title": chunk.title,
+                "source_type": chunk.source_type,
+                "uri": chunk.uri,
+                "content": chunk.content,
+                "chunk_index": chunk.chunk_index,
+                "embedding_status": "embedded" if chunk.embedding else "pending",
+            }
+            for chunk in chunks
+        ]
+        payload["maintenance_policy"] = KNOWLEDGE_DOCUMENT_MAINTENANCE_POLICY
+    return payload
+
+
+def tenant_embedding_summary(tenant_id: str) -> dict[str, Any]:
+    chunks = _chunks_for_tenant(tenant_id)
+    embedded_chunk_count = sum(1 for chunk in chunks if chunk.embedding)
+    return {
+        "tenant_id": tenant_id,
+        "chunk_count": len(chunks),
+        "embedded_chunk_count": embedded_chunk_count,
+        "embedding_status": _embedding_status(len(chunks), embedded_chunk_count),
+    }
 
 
 @app.get("/api/health")
@@ -251,17 +336,25 @@ def create_document(payload: CreateDocumentRequest, principal: Principal = Depen
             source_type=payload.source_type,
             uri=payload.uri,
             content=payload.content,
-        )
+        ),
+        embed=False,
     )
+    response = knowledge_document_response(document)
     audit(
         principal,
         "document_created",
         "document",
         document.id,
-        {"tenant_id": document.tenant_id},
+        {
+            "tenant_id": document.tenant_id,
+            "source_type": document.source_type,
+            "uri": document.uri,
+            "chunk_count": response["chunk_count"],
+            "embedding_status": response["embedding_status"],
+        },
         tenant_id=document.tenant_id,
     )
-    return to_dict(document)
+    return response
 
 
 @app.post("/api/knowledge/embeddings/ingest")
@@ -269,15 +362,45 @@ def ingest_embeddings(payload: IngestEmbeddingsRequest, principal: Principal = D
     require_role(principal, KNOWLEDGE_WRITE_ROLES, "Ingesting embeddings requires knowledge_admin or admin role")
     tenant_id = resolve_tenant(principal, payload.tenant_id)
     updated = store.ingest_missing_embeddings(tenant_id=tenant_id)
-    audit(principal, "embeddings_ingested", "tenant", tenant_id, {"updated_chunks": updated}, tenant_id=tenant_id)
-    return {"updated_chunks": updated, "tenant_id": tenant_id}
+    summary = tenant_embedding_summary(tenant_id)
+    audit(
+        principal,
+        "embeddings_ingested",
+        "tenant",
+        tenant_id,
+        {"updated_chunks": updated, **summary},
+        tenant_id=tenant_id,
+    )
+    return {"updated_chunks": updated, **summary}
 
 
 @app.get("/api/knowledge/documents")
 def list_documents(tenant_id: Optional[str] = None, principal: Principal = Depends(get_current_principal)) -> list:
     require_role(principal, KNOWLEDGE_READ_ROLES, "Reading knowledge requires knowledge_admin or admin role")
     requested_tenant_id = resolve_tenant(principal, tenant_id)
-    return to_dict(store.list_documents(tenant_id=requested_tenant_id))
+    return [
+        knowledge_document_response(document)
+        for document in store.list_documents(tenant_id=requested_tenant_id)
+    ]
+
+
+@app.get("/api/knowledge/documents/{document_id}")
+def get_document(document_id: str, principal: Principal = Depends(get_current_principal)) -> dict:
+    require_role(principal, KNOWLEDGE_READ_ROLES, "Reading knowledge requires knowledge_admin or admin role")
+    try:
+        document = store.get_document(document_id)
+        require_tenant_access(principal, document.tenant_id, hide=True)
+        return knowledge_document_response(document, include_chunks=True)
+    except NotFoundError as exc:
+        raise not_found(exc)
+    except HTTPException as exc:
+        raise hidden_not_found(exc)
+
+
+@app.get("/api/knowledge/policy")
+def get_knowledge_policy(principal: Principal = Depends(get_current_principal)) -> dict:
+    require_role(principal, KNOWLEDGE_READ_ROLES, "Reading knowledge requires knowledge_admin or admin role")
+    return KNOWLEDGE_DOCUMENT_MAINTENANCE_POLICY
 
 
 @app.get("/api/audit/logs")

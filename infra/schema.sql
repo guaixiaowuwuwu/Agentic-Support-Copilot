@@ -54,8 +54,16 @@ CREATE TABLE IF NOT EXISTS documents (
   source_type TEXT NOT NULL,
   uri TEXT NOT NULL,
   content TEXT NOT NULL,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  status TEXT NOT NULL DEFAULT 'active',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+ALTER TABLE documents
+  ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active';
+
+ALTER TABLE documents
+  ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
 
 CREATE TABLE IF NOT EXISTS document_chunks (
   id UUID PRIMARY KEY,

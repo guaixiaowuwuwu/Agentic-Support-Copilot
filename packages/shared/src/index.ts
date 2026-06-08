@@ -118,7 +118,26 @@ export interface Document {
   source_type: string;
   uri: string;
   content: string;
+  status: string;
   created_at: string;
+  updated_at: string;
+  chunk_count?: number;
+  embedded_chunk_count?: number;
+  embedding_status?: "empty" | "pending" | "partial" | "embedded" | string;
+  chunks?: DocumentChunkSummary[];
+  maintenance_policy?: Record<string, unknown>;
+}
+
+export interface DocumentChunkSummary {
+  id: string;
+  document_id: string;
+  tenant_id: string;
+  title: string;
+  source_type: string;
+  uri: string;
+  content: string;
+  chunk_index: number;
+  embedding_status: "pending" | "embedded" | string;
 }
 
 export interface AuditLog {

@@ -509,6 +509,32 @@ tr:last-child td {
   font-size: 12px;
 }
 
+.uri-cell {
+  max-width: 280px;
+  overflow-wrap: anywhere;
+}
+
+.document-details {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.document-details summary {
+  width: fit-content;
+  cursor: pointer;
+  color: var(--accent-strong);
+  font-weight: 800;
+}
+
+.document-details p {
+  max-width: 520px;
+  margin: 7px 0 0;
+  color: #48515a;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
 .badge {
   display: inline-flex;
   align-items: center;

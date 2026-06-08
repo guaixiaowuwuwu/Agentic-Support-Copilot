@@ -2,6 +2,28 @@
 
 > 本日志按每次更新的能力内容分组，不按日期分组。
 
+## 知识库自助维护第一版
+
+### 新增
+- `/knowledge` 工作台增强文档列表，展示来源 URI、chunk 数、embedding 状态和创建时间，并支持展开查看文档内容。
+- 知识库导入现在返回文档 chunk 数、已生成 embedding 数和整体 embedding 状态。
+- 新增 `GET /api/knowledge/documents/{document_id}` 文档详情接口，返回文档分块和分块级 embedding 状态。
+- 新增 `GET /api/knowledge/policy`，明确第一版不可编辑、后续更新/下线/删除的审计化维护策略。
+- 知识库写入和 embedding ingestion 的 audit log 补充来源类型、URI、chunk 数和 ingestion 摘要。
+
+### 变更
+- 通过 API 新增文档时先生成 chunks 但不立即生成 embedding，试用团队可显式触发 embedding ingestion 后再进入可检索状态。
+- 内存向量检索不再临时为缺失 embedding 的 chunk 生成向量，避免未 ingestion 文档被提前检索。
+- PostgreSQL 存储启动时会为旧库中缺失 chunks 的文档补齐分块和 embedding，兼容已有 PoC 数据。
+- 文档模型和 PostgreSQL schema 增加 `status` 和 `updated_at`，为后续下线、版本管理和审核发布预留。
+- 前端共享类型和中英文字典同步补齐知识库文档状态字段。
+
+### 验证
+- 后端单元测试通过：`.venv/bin/python -m unittest discover -s apps/api/tests`。
+- 前端 TypeScript no-emit 检查通过：`npx tsc --project apps/web/tsconfig.json --noEmit`。
+- diff 格式检查通过：`git diff --check`。
+- 验收路径已覆盖：`knowledge_admin` 导入 runbook、触发 ingestion 后新工单可检索新知识、普通客服无法写入或 ingestion。
+
 ## 可信身份上下文与角色化工作台
 
 ### 新增

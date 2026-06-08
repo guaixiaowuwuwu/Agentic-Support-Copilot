@@ -148,7 +148,18 @@ export const dictionaries = {
       ingestResult: "已更新 {count} 个分块",
       tableTitle: "标题",
       tableSource: "来源",
-      tableCreated: "创建时间"
+      tableChunks: "分块",
+      tableEmbedding: "Embedding",
+      tableCreated: "创建时间",
+      sourceUri: "来源 URI",
+      viewDetails: "查看详情",
+      embeddedChunks: "{embedded}/{total} 已生成",
+      embeddingStatus: {
+        empty: "无分块",
+        pending: "待生成",
+        partial: "部分完成",
+        embedded: "已生成"
+      }
     },
     audit: {
       eyebrow: "安全边界",
@@ -198,7 +209,11 @@ export const dictionaries = {
       failed: "失败",
       low: "低",
       medium: "中",
-      high: "高"
+      high: "高",
+      empty: "无",
+      partial: "部分",
+      embedded: "已生成",
+      active: "有效"
     }
   },
   en: {
@@ -340,7 +355,18 @@ export const dictionaries = {
       ingestResult: "Updated {count} chunks",
       tableTitle: "Title",
       tableSource: "Source",
-      tableCreated: "Created"
+      tableChunks: "Chunks",
+      tableEmbedding: "Embedding",
+      tableCreated: "Created",
+      sourceUri: "Source URI",
+      viewDetails: "View details",
+      embeddedChunks: "{embedded}/{total} embedded",
+      embeddingStatus: {
+        empty: "No chunks",
+        pending: "Pending",
+        partial: "Partial",
+        embedded: "Embedded"
+      }
     },
     audit: {
       eyebrow: "Security boundary",
@@ -390,7 +416,11 @@ export const dictionaries = {
       failed: "failed",
       low: "low",
       medium: "medium",
-      high: "high"
+      high: "high",
+      empty: "empty",
+      partial: "partial",
+      embedded: "embedded",
+      active: "active"
     }
   }
 } as const;

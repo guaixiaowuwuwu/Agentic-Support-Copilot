@@ -16,7 +16,11 @@ const variants: Record<string, string> = {
   failed: "badge-red",
   low: "badge-green",
   medium: "badge-amber",
-  high: "badge-red"
+  high: "badge-red",
+  empty: "badge-neutral",
+  partial: "badge-blue",
+  embedded: "badge-green",
+  active: "badge-green"
 };
 
 export function StatusBadge({ value, locale }: { value?: string | null; locale?: Locale }) {
