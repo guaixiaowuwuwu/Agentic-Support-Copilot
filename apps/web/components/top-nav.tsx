@@ -1,32 +1,55 @@
-import { Bot, ClipboardList, ShieldCheck, UserRound } from "lucide-react";
+import type { UserContext } from "@support-copilot/shared";
+import { BookOpenText, Bot, ClipboardList, ScrollText, Settings, ShieldCheck, UserRound } from "lucide-react";
 import Link from "next/link";
 
 import { LanguageToggle } from "@/components/language-toggle";
-import { userContext } from "@/lib/api";
 import type { Dictionary, Locale } from "@/lib/i18n";
+import { defaultPathForUser, navigationForUser, type WorkspaceId } from "@/lib/rbac";
 
-export function TopNav({ dict, locale }: { dict: Dictionary; locale: Locale }) {
+const navIcons: Record<WorkspaceId, typeof ClipboardList> = {
+  tickets: ClipboardList,
+  approvals: ShieldCheck,
+  knowledge: BookOpenText,
+  audit: ScrollText,
+  admin: Settings
+};
+
+export function TopNav({
+  dict,
+  locale,
+  user
+}: {
+  dict: Dictionary;
+  locale: Locale;
+  user?: UserContext | null;
+}) {
+  const navItems = user ? navigationForUser(user, dict) : [];
+  const homeHref = user ? defaultPathForUser(user) : "/";
+
   return (
     <header className="topbar">
-      <Link href="/" className="brand" aria-label="Agentic Support Copilot dashboard">
+      <Link href={homeHref} className="brand" aria-label="Agentic Support Copilot dashboard">
         <Bot size={22} />
         <span>Agentic Support Copilot</span>
       </Link>
       <div className="topbar-actions">
-        <nav className="navlinks" aria-label="Primary navigation">
-          <Link href="/">
-            <ClipboardList size={16} />
-            {dict.nav.tickets}
-          </Link>
-          <Link href="/approvals">
-            <ShieldCheck size={16} />
-            {dict.nav.approvals}
-          </Link>
-        </nav>
-        <div className="user-chip" title={`${userContext.email} · ${userContext.roles.join(", ")}`}>
+        {navItems.length ? (
+          <nav className="navlinks" aria-label="Primary navigation">
+            {navItems.map((item) => {
+              const Icon = navIcons[item.id];
+              return (
+                <Link key={item.id} href={item.href}>
+                  <Icon size={16} />
+                  {item.label}
+                </Link>
+              );
+            })}
+          </nav>
+        ) : null}
+        <div className="user-chip" title={user ? `${user.email} · ${user.roles.join(", ")}` : dict.state.authTitle}>
           <UserRound size={16} />
-          <span>{userContext.tenant_id}</span>
-          <small>{userContext.email}</small>
+          <span>{user?.tenant_id ?? "-"}</span>
+          <small>{user?.email ?? dict.state.authTitle}</small>
         </div>
         <LanguageToggle locale={locale} />
       </div>

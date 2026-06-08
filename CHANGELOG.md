@@ -2,6 +2,32 @@
 
 > 本日志按每次更新的能力内容分组，不按日期分组。
 
+## 可信身份上下文与角色化工作台
+
+### 新增
+- 新增后端 trusted identity headers 模式，staging / production 可通过可信 ingress、API gateway、SSO proxy 或 Next.js server 注入身份上下文。
+- 新增 `/api/auth/me` 启动身份读取路径，前端首屏按当前用户、租户和角色生成导航与默认工作台。
+- 新增角色化工作台入口：`support_agent` 访问工单和 trace，`approver` 访问审批和 trace，`knowledge_admin` 访问知识库，`admin` 访问工单、审批、知识库、审计和系统配置。
+- 新增 `/knowledge` 页面，支持租户文档列表、新增文档和 embedding ingestion。
+- 新增 `/audit` 页面和 `GET /api/audit/logs`，用于查看租户范围内的审计记录。
+- 新增 `/admin` 页面和 `GET /api/admin/config`，展示非敏感系统配置、身份模式、工具白名单和 LLM 状态。
+- 新增 401 / 403 / 404 前端状态文案，分别展示登录缺失、权限不足和资源不可见/不存在。
+
+### 变更
+- `NEXT_PUBLIC_SUPPORT_COPILOT_*` 身份变量现在仅作为本地开发 / demo 默认值，生产样环境不再把浏览器可见配置当作身份源。
+- 后端 RBAC 进一步按职责收紧：`support_agent` 不能批准 / 驳回审批，`approver` 不能创建工单或启动 run，普通客服不能读取或写入知识库。
+- 前端按钮和入口按角色隐藏不可执行操作，同时保留后端 RBAC 作为手动 URL 访问和直接 API 调用的安全边界。
+- 审批决定不再依赖前端传入 `decided_by`，后端始终使用可信 principal email。
+- README、环境配置基线、`.env.example` 和项目说明同步更新可信身份部署方式。
+
+### 验证
+- 后端认证/RBAC 测试通过：`.venv/bin/python -m unittest apps/api/tests/test_auth.py`。
+- 后端单元测试通过：`.venv/bin/python -m unittest discover -s apps/api/tests`。
+- 前端 production build 通过：`npm --workspace apps/web run build`。
+- TypeScript no-emit 检查通过：`npm --workspace apps/web exec tsc -- --noEmit`。
+- 浏览器 E2E 通过：`npm run test:e2e`。
+- 已用 in-app Browser 验证本地 demo 身份下的 Dashboard、Approvals 和无权限 Knowledge 页面状态。
+
 ## 移除生产可见 demo fallback
 
 ### 新增

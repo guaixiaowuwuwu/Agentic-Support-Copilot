@@ -233,6 +233,9 @@ textarea {
 
 .metric strong {
   margin-left: auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  text-align: right;
   font-size: 24px;
   letter-spacing: 0;
 }
@@ -370,6 +373,16 @@ textarea:focus {
 .form-error {
   color: var(--red);
   font-size: 13px;
+}
+
+.form-success {
+  color: var(--green);
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.knowledge-actions {
+  min-width: 0;
 }
 
 .state-panel {

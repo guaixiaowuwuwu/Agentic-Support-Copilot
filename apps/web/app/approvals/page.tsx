@@ -5,18 +5,50 @@ import Link from "next/link";
 import { ApiErrorState, StatePanel } from "@/components/page-state";
 import { ApprovalButtons } from "@/components/run-actions";
 import { StatusBadge } from "@/components/status-badge";
-import { apiGet, demoApprovals } from "@/lib/api";
+import { demoApprovals } from "@/lib/api";
 import { compactId, formatDate } from "@/lib/format";
 import { getI18n } from "@/lib/i18n-server";
+import { hasCapability } from "@/lib/rbac";
+import { getCurrentUserResult, serverApiGet } from "@/lib/server-api";
 
 export const dynamic = "force-dynamic";
 
 export default async function ApprovalsPage() {
   const { locale, dict } = await getI18n();
+  const userResult = await getCurrentUserResult();
+
+  if (!userResult.ok) {
+    return (
+      <main className="page">
+        <section className="page-title">
+          <div>
+            <p className="eyebrow">{dict.approvals.eyebrow}</p>
+            <h1>{dict.approvals.title}</h1>
+          </div>
+        </section>
+        <ApiErrorState error={userResult.error} dict={dict} body={dict.state.approvalsErrorBody} />
+      </main>
+    );
+  }
+
+  if (!hasCapability(userResult.data, "approvals")) {
+    return (
+      <main className="page">
+        <section className="page-title">
+          <div>
+            <p className="eyebrow">{dict.approvals.eyebrow}</p>
+            <h1>{dict.approvals.title}</h1>
+          </div>
+        </section>
+        <StatePanel tone="permission" title={dict.state.permissionTitle} body={dict.state.workspaceDeniedBody} />
+      </main>
+    );
+  }
+
   let approvals: Approval[];
 
   try {
-    approvals = await apiGet<Approval[]>("/api/approvals?status=pending", demoApprovals);
+    approvals = await serverApiGet<Approval[]>("/api/approvals?status=pending", demoApprovals);
   } catch (error) {
     return (
       <main className="page">

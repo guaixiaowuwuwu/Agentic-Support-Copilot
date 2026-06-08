@@ -15,7 +15,10 @@ export const dictionaries = {
     nav: {
       tickets: "工单",
       approvals: "审批",
-      trace: "追踪"
+      trace: "追踪",
+      knowledge: "知识库",
+      audit: "审计",
+      admin: "系统"
     },
     languageToggle: {
       ariaLabel: "切换语言",
@@ -34,9 +37,16 @@ export const dictionaries = {
       retry: "重试",
       loadingTitle: "正在加载",
       loadingBody: "正在从后端读取最新数据。",
+      authTitle: "需要登录",
+      authBody: "没有读取到可信身份上下文。请通过企业网关、SSO 或本地 demo 身份访问。",
       errorTitle: "无法加载数据",
       permissionTitle: "权限不足",
       permissionBody: "当前身份没有访问此资源的权限，请切换角色或联系管理员。",
+      notFoundTitle: "未找到资源",
+      notFoundBody: "该资源不存在，或当前租户无权查看。",
+      workspaceDeniedBody: "当前角色不能打开这个工作台。导航只会显示可访问的入口，但后端仍会阻止手动访问。",
+      noWorkspaceTitle: "暂无工作台",
+      noWorkspaceBody: "当前身份没有分配任何可用角色，请联系管理员补齐权限。",
       dashboardErrorBody: "无法读取工单队列。请确认后端服务可用，然后重试。",
       dashboardApprovalsErrorBody: "无法读取审批数量。工单队列仍可查看，请稍后重试审批数据。",
       ticketsEmptyTitle: "暂无工单",
@@ -48,12 +58,19 @@ export const dictionaries = {
       runErrorBody: "工单已读取，但无法读取最近运行的追踪数据。",
       noRunBody: "启动一次 Agent 运行后，这里会显示当前节点、风险和追踪入口。",
       traceErrorBody: "无法读取运行追踪。请确认运行存在、后端服务可用并重试。",
+      knowledgeErrorBody: "无法读取知识库。请确认当前角色、租户权限和后端服务状态。",
+      auditErrorBody: "无法读取审计日志。只有管理员可以查看该入口。",
+      adminErrorBody: "无法读取系统配置。只有管理员可以查看该入口。",
       stepsEmptyTitle: "暂无步骤",
       stepsEmptyBody: "运行开始后，Agent 步骤会按时间线展示。",
       toolsEmptyTitle: "暂无工具调用",
       toolsEmptyBody: "本次运行没有记录工具调用。",
       evidenceEmptyTitle: "暂无证据",
-      evidenceEmptyBody: "检索命中的知识库证据会显示在这里。"
+      evidenceEmptyBody: "检索命中的知识库证据会显示在这里。",
+      documentsEmptyTitle: "暂无文档",
+      documentsEmptyBody: "新增文档并生成 embedding 后，RAG 检索会使用这些内容。",
+      auditEmptyTitle: "暂无审计记录",
+      auditEmptyBody: "审批、知识库写入、工具调用和运行请求会在这里留下记录。"
     },
     dashboard: {
       eyebrow: "私有化支持运营",
@@ -114,6 +131,47 @@ export const dictionaries = {
       eyebrow: "人工审批",
       title: "审批队列"
     },
+    knowledge: {
+      eyebrow: "租户知识",
+      title: "知识库",
+      newDocument: "新增文档",
+      documents: "文档",
+      source: "来源类型",
+      uri: "URI",
+      content: "内容",
+      create: "创建文档",
+      creating: "创建中",
+      ingest: "生成 Embedding",
+      ingesting: "生成中",
+      createFailed: "创建文档失败",
+      ingestFailed: "生成 embedding 失败",
+      ingestResult: "已更新 {count} 个分块",
+      tableTitle: "标题",
+      tableSource: "来源",
+      tableCreated: "创建时间"
+    },
+    audit: {
+      eyebrow: "安全边界",
+      title: "审计日志",
+      actor: "操作者",
+      action: "动作",
+      target: "目标",
+      created: "时间"
+    },
+    admin: {
+      eyebrow: "系统配置",
+      title: "管理员",
+      environment: "环境",
+      store: "存储",
+      authMode: "身份模式",
+      trustedSecret: "可信 secret",
+      localHeaders: "本地身份头",
+      enabled: "已启用",
+      disabled: "已禁用",
+      allowedTools: "白名单工具",
+      configuredBackends: "已配置后端",
+      llm: "LLM"
+    },
     trace: {
       title: "运行追踪",
       metricsLabel: "运行指标",
@@ -149,7 +207,10 @@ export const dictionaries = {
     nav: {
       tickets: "Tickets",
       approvals: "Approvals",
-      trace: "Trace"
+      trace: "Trace",
+      knowledge: "Knowledge",
+      audit: "Audit",
+      admin: "Admin"
     },
     languageToggle: {
       ariaLabel: "Switch language",
@@ -168,9 +229,16 @@ export const dictionaries = {
       retry: "Retry",
       loadingTitle: "Loading",
       loadingBody: "Reading the latest data from the API.",
+      authTitle: "Sign-in required",
+      authBody: "No trusted identity context was found. Enter through the company gateway, SSO, or local demo identity.",
       errorTitle: "Unable to load data",
       permissionTitle: "Permission required",
       permissionBody: "Your current identity cannot access this resource. Switch roles or contact an administrator.",
+      notFoundTitle: "Resource not found",
+      notFoundBody: "This resource does not exist, or your tenant cannot view it.",
+      workspaceDeniedBody: "Your role cannot open this workspace. Navigation only shows available entries, while backend RBAC still blocks manual URL access.",
+      noWorkspaceTitle: "No workspace",
+      noWorkspaceBody: "Your identity has no usable role. Ask an administrator to assign access.",
       dashboardErrorBody: "Unable to read the ticket queue. Check that the API is available, then retry.",
       dashboardApprovalsErrorBody: "Unable to read approval counts. The ticket queue is still available; retry approval data later.",
       ticketsEmptyTitle: "No tickets yet",
@@ -182,12 +250,19 @@ export const dictionaries = {
       runErrorBody: "The ticket loaded, but its latest run trace could not be read.",
       noRunBody: "Start an agent run to show the current node, risk, and trace entry here.",
       traceErrorBody: "Unable to read this run trace. Confirm the run exists and the API is available, then retry.",
+      knowledgeErrorBody: "Unable to read the knowledge base. Check your role, tenant scope, and API health.",
+      auditErrorBody: "Unable to read audit logs. This workspace is admin-only.",
+      adminErrorBody: "Unable to read system configuration. This workspace is admin-only.",
       stepsEmptyTitle: "No steps yet",
       stepsEmptyBody: "Agent steps will appear on the timeline after a run starts.",
       toolsEmptyTitle: "No tool calls",
       toolsEmptyBody: "This run has no recorded tool calls.",
       evidenceEmptyTitle: "No evidence",
-      evidenceEmptyBody: "Retrieved knowledge evidence will appear here."
+      evidenceEmptyBody: "Retrieved knowledge evidence will appear here.",
+      documentsEmptyTitle: "No documents",
+      documentsEmptyBody: "Create documents and ingest embeddings before RAG retrieval uses this content.",
+      auditEmptyTitle: "No audit records",
+      auditEmptyBody: "Approval decisions, knowledge writes, tool calls, and run requests will be recorded here."
     },
     dashboard: {
       eyebrow: "Private support operations",
@@ -247,6 +322,47 @@ export const dictionaries = {
     approvals: {
       eyebrow: "Human approval",
       title: "Approval Queue"
+    },
+    knowledge: {
+      eyebrow: "Tenant knowledge",
+      title: "Knowledge",
+      newDocument: "New document",
+      documents: "Documents",
+      source: "Source type",
+      uri: "URI",
+      content: "Content",
+      create: "Create document",
+      creating: "Creating",
+      ingest: "Ingest embeddings",
+      ingesting: "Ingesting",
+      createFailed: "Create document failed",
+      ingestFailed: "Embedding ingestion failed",
+      ingestResult: "Updated {count} chunks",
+      tableTitle: "Title",
+      tableSource: "Source",
+      tableCreated: "Created"
+    },
+    audit: {
+      eyebrow: "Security boundary",
+      title: "Audit Logs",
+      actor: "Actor",
+      action: "Action",
+      target: "Target",
+      created: "Created"
+    },
+    admin: {
+      eyebrow: "System configuration",
+      title: "Admin",
+      environment: "Environment",
+      store: "Store",
+      authMode: "Auth mode",
+      trustedSecret: "Trusted secret",
+      localHeaders: "Local headers",
+      enabled: "Enabled",
+      disabled: "Disabled",
+      allowedTools: "Allowed tools",
+      configuredBackends: "Configured backends",
+      llm: "LLM"
     },
     trace: {
       title: "Trace",

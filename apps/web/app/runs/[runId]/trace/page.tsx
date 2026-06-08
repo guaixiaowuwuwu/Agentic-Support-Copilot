@@ -3,19 +3,55 @@ import { Database, FileSearch, GitBranch, Timer } from "lucide-react";
 
 import { ApiErrorState, StatePanel } from "@/components/page-state";
 import { StatusBadge } from "@/components/status-badge";
-import { apiGet, demoTrace } from "@/lib/api";
+import { demoTrace } from "@/lib/api";
 import { compactId } from "@/lib/format";
 import { getI18n } from "@/lib/i18n-server";
+import { hasCapability } from "@/lib/rbac";
+import { getCurrentUserResult, serverApiGet } from "@/lib/server-api";
 
 export const dynamic = "force-dynamic";
 
 export default async function RunTracePage({ params }: { params: Promise<{ runId: string }> }) {
   const { locale, dict } = await getI18n();
   const { runId } = await params;
+  const userResult = await getCurrentUserResult();
+
+  if (!userResult.ok) {
+    return (
+      <main className="page">
+        <section className="page-title">
+          <div>
+            <p className="eyebrow">
+              {dict.common.run} {compactId(runId)}
+            </p>
+            <h1>{dict.trace.title}</h1>
+          </div>
+        </section>
+        <ApiErrorState error={userResult.error} dict={dict} body={dict.state.traceErrorBody} />
+      </main>
+    );
+  }
+
+  if (!hasCapability(userResult.data, "trace")) {
+    return (
+      <main className="page">
+        <section className="page-title">
+          <div>
+            <p className="eyebrow">
+              {dict.common.run} {compactId(runId)}
+            </p>
+            <h1>{dict.trace.title}</h1>
+          </div>
+        </section>
+        <StatePanel tone="permission" title={dict.state.permissionTitle} body={dict.state.workspaceDeniedBody} />
+      </main>
+    );
+  }
+
   let trace: RunTrace;
 
   try {
-    trace = await apiGet<RunTrace>(`/api/runs/${runId}/trace`, demoTrace);
+    trace = await serverApiGet<RunTrace>(`/api/runs/${runId}/trace`, demoTrace);
   } catch (error) {
     return (
       <main className="page">

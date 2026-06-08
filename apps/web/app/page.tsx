@@ -1,31 +1,56 @@
 import type { Approval, Ticket } from "@support-copilot/shared";
 import { Clock3, Gauge, ShieldCheck, TicketCheck } from "lucide-react";
 import Link from "next/link";
+import { redirect } from "next/navigation";
 
 import { ApiErrorState, StatePanel } from "@/components/page-state";
 import { StatusBadge } from "@/components/status-badge";
 import { TicketCreator } from "@/components/ticket-creator";
-import { apiGet, demoApprovals, demoTickets } from "@/lib/api";
+import { demoApprovals, demoTickets } from "@/lib/api";
 import { formatDate } from "@/lib/format";
 import { getI18n } from "@/lib/i18n-server";
+import { defaultPathForUser, hasCapability } from "@/lib/rbac";
+import { getCurrentUserResult, loadResult, serverApiGet } from "@/lib/server-api";
 
 export const dynamic = "force-dynamic";
 
-type LoadResult<T> = { ok: true; data: T } | { ok: false; error: unknown };
-
-async function loadResult<T>(promise: Promise<T>): Promise<LoadResult<T>> {
-  try {
-    return { ok: true, data: await promise };
-  } catch (error) {
-    return { ok: false, error };
-  }
-}
-
 export default async function DashboardPage() {
   const { locale, dict } = await getI18n();
+  const userResult = await getCurrentUserResult();
+
+  if (!userResult.ok) {
+    return (
+      <main className="page">
+        <section className="page-title">
+          <div>
+            <p className="eyebrow">{dict.dashboard.eyebrow}</p>
+            <h1>{dict.dashboard.title}</h1>
+          </div>
+        </section>
+        <ApiErrorState error={userResult.error} dict={dict} body={dict.state.dashboardErrorBody} />
+      </main>
+    );
+  }
+
+  const user = userResult.data;
+  if (!hasCapability(user, "tickets")) {
+    const defaultPath = defaultPathForUser(user);
+    if (defaultPath !== "/") {
+      redirect(defaultPath);
+    }
+    return (
+      <main className="page">
+        <StatePanel tone="permission" title={dict.state.noWorkspaceTitle} body={dict.state.noWorkspaceBody} />
+      </main>
+    );
+  }
+
+  const canReadApprovals = hasCapability(user, "approvals");
   const [ticketsResult, approvalsResult] = await Promise.all([
-    loadResult(apiGet<Ticket[]>("/api/tickets", demoTickets)),
-    loadResult(apiGet<Approval[]>("/api/approvals?status=pending", demoApprovals))
+    loadResult(serverApiGet<Ticket[]>("/api/tickets", demoTickets)),
+    canReadApprovals
+      ? loadResult(serverApiGet<Approval[]>("/api/approvals?status=pending", demoApprovals))
+      : Promise.resolve({ ok: true as const, data: [] as Approval[] })
   ]);
 
   if (!ticketsResult.ok) {
@@ -54,12 +79,14 @@ export default async function DashboardPage() {
           <p className="eyebrow">{dict.dashboard.eyebrow}</p>
           <h1>{dict.dashboard.title}</h1>
         </div>
-        <div className="title-actions">
-          <Link className="icon-button" href="/approvals" title={dict.dashboard.openApprovals}>
-            <ShieldCheck size={17} />
-            <span>{dict.nav.approvals}</span>
-          </Link>
-        </div>
+        {canReadApprovals ? (
+          <div className="title-actions">
+            <Link className="icon-button" href="/approvals" title={dict.dashboard.openApprovals}>
+              <ShieldCheck size={17} />
+              <span>{dict.nav.approvals}</span>
+            </Link>
+          </div>
+        ) : null}
       </section>
 
       <section className="metrics-grid" aria-label={dict.dashboard.metricsLabel}>
@@ -98,7 +125,7 @@ export default async function DashboardPage() {
           <div className="surface-header">
             <h2>{dict.dashboard.newTicket}</h2>
           </div>
-          <TicketCreator key={locale} locale={locale} />
+          <TicketCreator key={locale} locale={locale} tenantId={user.tenant_id} />
         </div>
 
         <div className="surface">

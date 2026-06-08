@@ -101,9 +101,50 @@ export interface RunTrace {
   approval?: Approval | null;
 }
 
+export type UserRole = "support_agent" | "approver" | "knowledge_admin" | "admin";
+
 export interface UserContext {
   email: string;
   tenant_id: string;
   tenant_ids: string[];
-  roles: string[];
+  roles: UserRole[] | string[];
+  auth_source?: string;
+}
+
+export interface Document {
+  id: string;
+  tenant_id: string;
+  title: string;
+  source_type: string;
+  uri: string;
+  content: string;
+  created_at: string;
+}
+
+export interface AuditLog {
+  id: string;
+  tenant_id: string;
+  actor: string;
+  action: string;
+  target_type: string;
+  target_id: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface AdminConfig {
+  environment: string;
+  store: string;
+  auth: {
+    mode: string;
+    app_env: string;
+    trusted_identity_required: boolean;
+    trusted_identity_secret_configured: boolean;
+    local_dev_headers_enabled: boolean;
+  };
+  llm: Record<string, unknown>;
+  tools: {
+    allowed: string[];
+    configured_backends: string[];
+  };
 }

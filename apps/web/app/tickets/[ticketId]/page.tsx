@@ -5,9 +5,11 @@ import Link from "next/link";
 import { ApiErrorState, StatePanel } from "@/components/page-state";
 import { ApprovalButtons, StartRunButton } from "@/components/run-actions";
 import { StatusBadge } from "@/components/status-badge";
-import { apiGet, demoTicket, demoTrace } from "@/lib/api";
+import { demoTicket, demoTrace } from "@/lib/api";
 import { compactId, formatDate } from "@/lib/format";
 import { getI18n } from "@/lib/i18n-server";
+import { hasCapability } from "@/lib/rbac";
+import { getCurrentUserResult, serverApiGet } from "@/lib/server-api";
 
 export const dynamic = "force-dynamic";
 
@@ -16,10 +18,41 @@ type TraceResult = { ok: true; trace: RunTrace } | { ok: false; error: unknown }
 export default async function TicketPage({ params }: { params: Promise<{ ticketId: string }> }) {
   const { locale, dict } = await getI18n();
   const { ticketId } = await params;
+  const userResult = await getCurrentUserResult();
+
+  if (!userResult.ok) {
+    return (
+      <main className="page">
+        <section className="page-title">
+          <div>
+            <p className="eyebrow">{dict.ticketDetail.ticket}</p>
+            <h1>{compactId(ticketId)}</h1>
+          </div>
+        </section>
+        <ApiErrorState error={userResult.error} dict={dict} body={dict.state.ticketErrorBody} />
+      </main>
+    );
+  }
+
+  const user = userResult.data;
+  if (!hasCapability(user, "tickets")) {
+    return (
+      <main className="page">
+        <section className="page-title">
+          <div>
+            <p className="eyebrow">{dict.ticketDetail.ticket}</p>
+            <h1>{compactId(ticketId)}</h1>
+          </div>
+        </section>
+        <StatePanel tone="permission" title={dict.state.permissionTitle} body={dict.state.workspaceDeniedBody} />
+      </main>
+    );
+  }
+
   let ticket: Ticket;
 
   try {
-    ticket = await apiGet<Ticket>(`/api/tickets/${ticketId}`, demoTicket);
+    ticket = await serverApiGet<Ticket>(`/api/tickets/${ticketId}`, demoTicket);
   } catch (error) {
     return (
       <main className="page">
@@ -39,7 +72,7 @@ export default async function TicketPage({ params }: { params: Promise<{ ticketI
 
   if (latestRunId) {
     try {
-      traceResult = { ok: true, trace: await apiGet<RunTrace>(`/api/runs/${latestRunId}/trace`, demoTrace) };
+      traceResult = { ok: true, trace: await serverApiGet<RunTrace>(`/api/runs/${latestRunId}/trace`, demoTrace) };
     } catch (error) {
       traceResult = { ok: false, error };
     }
@@ -55,7 +88,7 @@ export default async function TicketPage({ params }: { params: Promise<{ ticketI
           <p className="eyebrow">{ticket.customer_name}</p>
           <h1>{ticket.subject}</h1>
         </div>
-        <StartRunButton ticketId={ticket.id} locale={locale} />
+        {hasCapability(user, "start_run") ? <StartRunButton ticketId={ticket.id} locale={locale} /> : null}
       </section>
 
       <section className="detail-grid">
@@ -117,7 +150,7 @@ export default async function TicketPage({ params }: { params: Promise<{ ticketI
                   <GitBranch size={17} />
                   <span>{dict.common.trace}</span>
                 </Link>
-                {trace.approval?.status === "pending" ? (
+                {trace.approval?.status === "pending" && hasCapability(user, "approvals") ? (
                   <Link className="icon-button" href="/approvals" title={dict.common.openApprovalQueue}>
                     <ShieldCheck size={17} />
                     <span>{dict.common.review}</span>
@@ -138,7 +171,9 @@ export default async function TicketPage({ params }: { params: Promise<{ ticketI
             <StatusBadge value={trace.approval.status} locale={locale} />
           </div>
           <pre className="reply-preview">{trace.approval.proposed_reply}</pre>
-          {trace.approval.status === "pending" ? <ApprovalButtons approvalId={trace.approval.id} locale={locale} /> : null}
+          {trace.approval.status === "pending" && hasCapability(user, "approval_decision") ? (
+            <ApprovalButtons approvalId={trace.approval.id} locale={locale} />
+          ) : null}
         </section>
       ) : null}
 

@@ -1,7 +1,7 @@
 import { AlertTriangle, Inbox, Loader2, ShieldAlert } from "lucide-react";
 
 import { RetryButton } from "@/components/retry-button";
-import { isApiError, isPermissionError } from "@/lib/api";
+import { isApiError, isAuthenticationError, isNotFoundError, isPermissionError } from "@/lib/api";
 import type { Dictionary } from "@/lib/i18n";
 
 type StateTone = "empty" | "error" | "loading" | "permission";
@@ -58,14 +58,30 @@ export function ApiErrorState({
   body: string;
   compact?: boolean;
 }) {
-  const permission = isPermissionError(error);
+  const authentication = isAuthenticationError(error);
+  const permission = isPermissionError(error) && !authentication;
+  const notFound = isNotFoundError(error);
   const detail = isApiError(error) ? error.message : undefined;
+  const stateTitle = authentication
+    ? dict.state.authTitle
+    : permission
+      ? dict.state.permissionTitle
+      : notFound
+        ? dict.state.notFoundTitle
+        : dict.state.errorTitle;
+  const stateBody = authentication
+    ? dict.state.authBody
+    : permission
+      ? dict.state.permissionBody
+      : notFound
+        ? dict.state.notFoundBody
+        : body;
 
   return (
     <StatePanel
-      tone={permission ? "permission" : "error"}
-      title={permission ? dict.state.permissionTitle : dict.state.errorTitle}
-      body={permission ? dict.state.permissionBody : body}
+      tone={authentication || permission ? "permission" : "error"}
+      title={stateTitle}
+      body={stateBody}
       detail={detail}
       actionLabel={dict.state.retry}
       compact={compact}

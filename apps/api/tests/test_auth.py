@@ -14,8 +14,11 @@ from fastapi.testclient import TestClient
 
 from app import main as api_main
 from app.agents import SupportAgentWorkflow
-from app.models import Ticket
+from app.models import AuditLog, Ticket
 from app.store import InMemoryStore
+
+
+AUTH_ENV_KEYS = ("APP_ENV", "SUPPORT_COPILOT_AUTH_MODE", "SUPPORT_COPILOT_TRUSTED_IDENTITY_SECRET")
 
 
 def auth_headers(
@@ -24,6 +27,7 @@ def auth_headers(
     tenant_id: str = "acme",
     roles: str = "support_agent,approver",
     tenant_ids: str | None = None,
+    trusted_secret: str | None = None,
 ) -> dict[str, str]:
     headers = {
         "X-User-Email": email,
@@ -32,15 +36,29 @@ def auth_headers(
     }
     if tenant_ids:
         headers["X-Tenant-Ids"] = tenant_ids
+    if trusted_secret:
+        headers["X-Support-Copilot-Trusted-Identity"] = trusted_secret
     return headers
 
 
 class ApiAuthTest(unittest.TestCase):
     def setUp(self) -> None:
+        self._original_env = {key: os.environ.get(key) for key in AUTH_ENV_KEYS}
+        os.environ["APP_ENV"] = "development"
+        os.environ.pop("SUPPORT_COPILOT_AUTH_MODE", None)
+        os.environ.pop("SUPPORT_COPILOT_TRUSTED_IDENTITY_SECRET", None)
+        self.addCleanup(self._restore_auth_env)
         self.store = InMemoryStore(seed=True)
         api_main.store = self.store
         api_main.workflow = SupportAgentWorkflow(self.store)
         self.client = TestClient(api_main.app)
+
+    def _restore_auth_env(self) -> None:
+        for key, value in self._original_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
     def create_ticket(self, tenant_id: str, subject: str = "API 401") -> Ticket:
         return self.store.create_ticket(
@@ -60,6 +78,23 @@ class ApiAuthTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 401)
         self.assertEqual(response.json()["detail"], "Authentication headers are required")
+
+    def test_production_like_environment_requires_trusted_identity_context(self) -> None:
+        os.environ["APP_ENV"] = "production"
+
+        untrusted_response = self.client.get("/api/auth/me", headers=auth_headers())
+
+        self.assertEqual(untrusted_response.status_code, 401)
+        self.assertEqual(untrusted_response.json()["detail"], "Trusted identity context is not configured")
+
+        os.environ["SUPPORT_COPILOT_TRUSTED_IDENTITY_SECRET"] = "gateway-secret"
+        trusted_response = self.client.get(
+            "/api/auth/me",
+            headers=auth_headers(roles="support_agent", tenant_ids="acme", trusted_secret="gateway-secret"),
+        )
+
+        self.assertEqual(trusted_response.status_code, 200)
+        self.assertEqual(trusted_response.json()["auth_source"], "trusted_headers")
 
     def test_ticket_routes_are_scoped_to_request_tenant(self) -> None:
         acme_ticket = self.create_ticket("acme", "Acme API 401")
@@ -95,6 +130,26 @@ class ApiAuthTest(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 403)
+
+    def test_approver_cannot_create_tickets_or_start_runs(self) -> None:
+        ticket = self.create_ticket("acme")
+        headers = auth_headers(roles="approver", tenant_ids="acme")
+
+        create_response = self.client.post(
+            "/api/tickets",
+            headers=headers,
+            json={
+                "tenant_id": "acme",
+                "customer_name": "Acme Customer",
+                "channel": "email",
+                "subject": "API 401",
+                "description": "Customer reports API 401 errors.",
+            },
+        )
+        start_response = self.client.post(f"/api/runs/{ticket.id}/start", headers=headers)
+
+        self.assertEqual(create_response.status_code, 403)
+        self.assertEqual(start_response.status_code, 403)
 
     def test_run_trace_is_scoped_to_run_tenant(self) -> None:
         globex_ticket = self.create_ticket("globex")
@@ -141,6 +196,12 @@ class ApiAuthTest(unittest.TestCase):
         self.assertEqual(approval.decided_by, "lead@acme.test")
 
     def test_knowledge_writes_require_admin_role_and_tenant_scope(self) -> None:
+        list_response = self.client.get(
+            "/api/knowledge/documents",
+            headers=auth_headers(roles="support_agent", tenant_ids="acme"),
+        )
+        self.assertEqual(list_response.status_code, 403)
+
         support_agent_response = self.client.post(
             "/api/knowledge/documents",
             headers=auth_headers(roles="support_agent"),
@@ -167,6 +228,12 @@ class ApiAuthTest(unittest.TestCase):
         self.assertEqual(admin_response.status_code, 200)
         self.assertEqual(admin_response.json()["tenant_id"], "acme")
 
+        knowledge_list_response = self.client.get(
+            "/api/knowledge/documents",
+            headers=auth_headers(roles="knowledge_admin", tenant_ids="acme"),
+        )
+        self.assertEqual(knowledge_list_response.status_code, 200)
+
         spoof_response = self.client.post(
             "/api/knowledge/documents",
             headers=auth_headers(roles="knowledge_admin", tenant_ids="acme"),
@@ -178,6 +245,36 @@ class ApiAuthTest(unittest.TestCase):
             },
         )
         self.assertEqual(spoof_response.status_code, 403)
+
+    def test_admin_can_access_audit_logs_and_system_config(self) -> None:
+        self.store.add_audit(
+            AuditLog(
+                tenant_id="acme",
+                actor="system",
+                action="test_audit",
+                target_type="ticket",
+                target_id="ticket-test",
+                metadata={},
+            )
+        )
+
+        support_agent_audit = self.client.get(
+            "/api/audit/logs",
+            headers=auth_headers(roles="support_agent", tenant_ids="acme"),
+        )
+        support_agent_config = self.client.get(
+            "/api/admin/config",
+            headers=auth_headers(roles="support_agent", tenant_ids="acme"),
+        )
+        admin_audit = self.client.get("/api/audit/logs", headers=auth_headers(roles="admin", tenant_ids="acme"))
+        admin_config = self.client.get("/api/admin/config", headers=auth_headers(roles="admin", tenant_ids="acme"))
+
+        self.assertEqual(support_agent_audit.status_code, 403)
+        self.assertEqual(support_agent_config.status_code, 403)
+        self.assertEqual(admin_audit.status_code, 200)
+        self.assertEqual(admin_audit.json()[0]["action"], "test_audit")
+        self.assertEqual(admin_config.status_code, 200)
+        self.assertEqual(admin_config.json()["auth"]["mode"], "local_headers")
 
 
 if __name__ == "__main__":

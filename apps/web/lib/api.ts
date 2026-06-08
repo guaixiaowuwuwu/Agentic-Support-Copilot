@@ -1,4 +1,13 @@
-import type { AgentRun, Approval, RunTrace, Ticket, UserContext } from "@support-copilot/shared";
+import type {
+  AdminConfig,
+  AgentRun,
+  Approval,
+  AuditLog,
+  Document,
+  RunTrace,
+  Ticket,
+  UserContext
+} from "@support-copilot/shared";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
 const APP_ENV =
@@ -11,6 +20,8 @@ const APP_ENV =
 const PRODUCTION_LIKE_ENVS = new Set(["production", "staging", "preview"]);
 const DEMO_MODE_ENABLED =
   process.env.NEXT_PUBLIC_SUPPORT_COPILOT_DEMO_MODE === "true" && !PRODUCTION_LIKE_ENVS.has(APP_ENV);
+const LOCAL_IDENTITY_HEADERS_ENABLED =
+  !PRODUCTION_LIKE_ENVS.has(APP_ENV) && process.env.NEXT_PUBLIC_SUPPORT_COPILOT_LOCAL_IDENTITY_HEADERS !== "false";
 
 type ApiErrorOptions = {
   status?: number;
@@ -41,7 +52,8 @@ export class ApiError extends Error {
 export const apiConfig = {
   baseUrl: API_BASE,
   appEnv: APP_ENV,
-  demoMode: DEMO_MODE_ENABLED
+  demoMode: DEMO_MODE_ENABLED,
+  localIdentityHeaders: LOCAL_IDENTITY_HEADERS_ENABLED
 };
 
 function splitCsv(value: string | undefined, fallback: string[]): string[] {
@@ -52,7 +64,7 @@ function splitCsv(value: string | undefined, fallback: string[]): string[] {
   return items?.length ? items : fallback;
 }
 
-export const userContext: UserContext = {
+export const localDevUserContext: UserContext = {
   email: process.env.NEXT_PUBLIC_SUPPORT_COPILOT_USER_EMAIL ?? "lead@acme.example",
   tenant_id: process.env.NEXT_PUBLIC_SUPPORT_COPILOT_TENANT_ID ?? "acme",
   tenant_ids: splitCsv(process.env.NEXT_PUBLIC_SUPPORT_COPILOT_TENANT_IDS, [
@@ -61,12 +73,15 @@ export const userContext: UserContext = {
   roles: splitCsv(process.env.NEXT_PUBLIC_SUPPORT_COPILOT_USER_ROLES, ["support_agent", "approver"])
 };
 
-function authHeaders(): Record<string, string> {
+export function localDevIdentityHeaders(): Record<string, string> {
+  if (!LOCAL_IDENTITY_HEADERS_ENABLED) {
+    return {};
+  }
   return {
-    "X-User-Email": userContext.email,
-    "X-Tenant-Id": userContext.tenant_id,
-    "X-Tenant-Ids": userContext.tenant_ids.join(","),
-    "X-User-Roles": userContext.roles.join(",")
+    "X-User-Email": localDevUserContext.email,
+    "X-Tenant-Id": localDevUserContext.tenant_id,
+    "X-Tenant-Ids": localDevUserContext.tenant_ids.join(","),
+    "X-User-Roles": localDevUserContext.roles.join(",")
   };
 }
 
@@ -84,7 +99,7 @@ async function readResponseDetail(response: Response): Promise<string> {
   }
 }
 
-async function apiErrorFromResponse(response: Response, path: string): Promise<ApiError> {
+export async function apiErrorFromResponse(response: Response, path: string): Promise<ApiError> {
   const detail = await readResponseDetail(response);
   return new ApiError(detail || `Request failed with status ${response.status}`, {
     status: response.status,
@@ -93,7 +108,7 @@ async function apiErrorFromResponse(response: Response, path: string): Promise<A
   });
 }
 
-function normalizeApiError(error: unknown, path: string): ApiError {
+export function normalizeApiError(error: unknown, path: string): ApiError {
   if (error instanceof ApiError) {
     return error;
   }
@@ -111,11 +126,19 @@ export function isPermissionError(error: unknown): boolean {
   return isApiError(error) && error.isPermissionError;
 }
 
+export function isAuthenticationError(error: unknown): boolean {
+  return isApiError(error) && error.status === 401;
+}
+
+export function isNotFoundError(error: unknown): boolean {
+  return isApiError(error) && error.status === 404;
+}
+
 export async function apiGet<T>(path: string, demoFallback?: T): Promise<T> {
   try {
     const response = await fetch(`${API_BASE}${path}`, {
       cache: "no-store",
-      headers: authHeaders()
+      headers: localDevIdentityHeaders()
     });
     if (!response.ok) {
       throw await apiErrorFromResponse(response, path);
@@ -132,7 +155,7 @@ export async function apiGet<T>(path: string, demoFallback?: T): Promise<T> {
 export async function apiPost<T>(path: string, body: unknown = {}): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", ...authHeaders() },
+    headers: { "Content-Type": "application/json", ...localDevIdentityHeaders() },
     body: JSON.stringify(body)
   });
   if (!response.ok) {
@@ -168,6 +191,51 @@ export const demoApproval: Approval = {
   reason: "Customer-facing reply requires approval.",
   status: "pending",
   created_at: new Date(Date.now() - 1000 * 60 * 8).toISOString()
+};
+
+export const demoDocuments: Document[] = [
+  {
+    id: "demo-doc-auth-runbook",
+    tenant_id: "acme",
+    title: "API Authentication Runbook",
+    source_type: "knowledge_base",
+    uri: "kb://api/authentication-runbook",
+    content:
+      "401 Unauthorized responses are usually caused by a missing Authorization header, expired token, invalid API key, or insufficient OAuth scope.",
+    created_at: new Date(Date.now() - 1000 * 60 * 60 * 24).toISOString()
+  }
+];
+
+export const demoAuditLogs: AuditLog[] = [
+  {
+    id: "demo-audit-approval",
+    tenant_id: "acme",
+    actor: "lead@acme.example",
+    action: "approval_approved_via_api",
+    target_type: "approval",
+    target_id: "demo-approval-api-401",
+    metadata: { ticket_id: "demo-ticket-api-401" },
+    created_at: new Date(Date.now() - 1000 * 60 * 6).toISOString()
+  }
+];
+
+export const demoAdminConfig: AdminConfig = {
+  environment: "development",
+  store: "memory",
+  auth: {
+    mode: "local_headers",
+    app_env: "development",
+    trusted_identity_required: false,
+    trusted_identity_secret_configured: false,
+    local_dev_headers_enabled: true
+  },
+  llm: {
+    enabled: false
+  },
+  tools: {
+    allowed: ["log_search", "db_read", "jira_search", "github_search"],
+    configured_backends: []
+  }
 };
 
 export const demoTrace: RunTrace = {

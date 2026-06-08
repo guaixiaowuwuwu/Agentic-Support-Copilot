@@ -5,10 +5,10 @@ import { PlusCircle } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { FormEvent, useState } from "react";
 
-import { apiPost, userContext } from "@/lib/api";
+import { apiPost } from "@/lib/api";
 import { dictionaries, normalizeLocale, type Locale } from "@/lib/i18n";
 
-export function TicketCreator({ locale }: { locale?: Locale }) {
+export function TicketCreator({ locale, tenantId }: { locale?: Locale; tenantId: string }) {
   const router = useRouter();
   const activeLocale = normalizeLocale(locale);
   const dict = dictionaries[activeLocale].ticketForm;
@@ -23,7 +23,7 @@ export function TicketCreator({ locale }: { locale?: Locale }) {
     const form = new FormData(event.currentTarget);
     try {
       const ticket = await apiPost<Ticket>("/api/tickets", {
-        tenant_id: form.get("tenant_id") || "acme",
+        tenant_id: form.get("tenant_id") || tenantId,
         customer_name: form.get("customer_name") || dict.defaultCustomer,
         channel: form.get("channel") || "email",
         subject: form.get("subject"),
@@ -44,7 +44,7 @@ export function TicketCreator({ locale }: { locale?: Locale }) {
       <div className="form-row">
         <label>
           {dict.tenant}
-          <input name="tenant_id" value={userContext.tenant_id} readOnly />
+          <input name="tenant_id" value={tenantId} readOnly />
         </label>
         <label>
           {dict.customer}

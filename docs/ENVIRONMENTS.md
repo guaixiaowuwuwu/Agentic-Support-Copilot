@@ -12,7 +12,9 @@
 APP_ENV=development
 SUPPORT_COPILOT_STORE=memory
 SUPPORT_COPILOT_LLM_ENABLED=false
+SUPPORT_COPILOT_AUTH_MODE=local_headers
 NEXT_PUBLIC_API_BASE=http://127.0.0.1:8000
+NEXT_PUBLIC_SUPPORT_COPILOT_LOCAL_IDENTITY_HEADERS=true
 NEXT_PUBLIC_SUPPORT_COPILOT_USER_EMAIL=lead@acme.example
 NEXT_PUBLIC_SUPPORT_COPILOT_TENANT_ID=acme
 NEXT_PUBLIC_SUPPORT_COPILOT_TENANT_IDS=acme
@@ -47,6 +49,9 @@ SUPPORT_COPILOT_STORE=postgres
 SUPPORT_COPILOT_DATABASE_URL=postgresql://support-copilot:<secret>@<staging-postgres>:5432/support_copilot
 SUPPORT_COPILOT_LLM_ENABLED=false
 SUPPORT_COPILOT_ALLOWED_TOOLS=log_search,db_read,jira_search,github_search
+SUPPORT_COPILOT_AUTH_MODE=trusted_headers
+SUPPORT_COPILOT_TRUSTED_IDENTITY_SECRET=<secret-from-secret-manager>
+SUPPORT_COPILOT_API_TRUSTED_IDENTITY_SECRET=<secret-used-by-next-server-or-gateway>
 NEXT_PUBLIC_API_BASE=https://support-copilot-staging.example.com
 ```
 
@@ -54,7 +59,8 @@ NEXT_PUBLIC_API_BASE=https://support-copilot-staging.example.com
 
 - 使用带 pgvector 的独立 staging 数据库。
 - 不设置 `SUPPORT_COPILOT_TEST_DATABASE_URL` 指向 staging 主库。
-- header-based 身份只允许来自可信 ingress / API gateway。
+- `NEXT_PUBLIC_SUPPORT_COPILOT_*` 身份变量只用于本地/demo，不在 staging 作为身份源。
+- API 只接受带 `X-Support-Copilot-Trusted-Identity` 的可信身份上下文；该 secret 必须由可信 ingress / API gateway / SSO proxy / Next.js server 注入。
 - 前端 API 失败应作为部署问题处理，不能把 demo fallback 当作真实状态。
 
 ## Production
@@ -68,6 +74,9 @@ APP_ENV=production
 SUPPORT_COPILOT_STORE=postgres
 SUPPORT_COPILOT_DATABASE_URL=postgresql://support-copilot:<secret>@<production-postgres>:5432/support_copilot
 SUPPORT_COPILOT_ALLOWED_TOOLS=log_search,db_read,jira_search,github_search
+SUPPORT_COPILOT_AUTH_MODE=trusted_headers
+SUPPORT_COPILOT_TRUSTED_IDENTITY_SECRET=<secret-from-secret-manager>
+SUPPORT_COPILOT_API_TRUSTED_IDENTITY_SECRET=<secret-used-by-next-server-or-gateway>
 NEXT_PUBLIC_API_BASE=https://support-copilot.example.com
 ```
 
@@ -76,7 +85,8 @@ NEXT_PUBLIC_API_BASE=https://support-copilot.example.com
 - 禁止使用 `SUPPORT_COPILOT_STORE=memory`。
 - 禁止设置 `SUPPORT_COPILOT_TEST_DATABASE_URL`。
 - 数据库账号、LLM key、Jira/GitHub token、只读 DB URL 必须来自 secret manager。
-- header-based 身份需要由不可被浏览器伪造的 SSO / OIDC / JWT 或可信网关注入。
+- 禁止把 `NEXT_PUBLIC_SUPPORT_COPILOT_*` 当作真实身份源；浏览器可见配置只允许用于本地/demo。
+- 身份必须来自不可被浏览器伪造的 SSO / OIDC / JWT / API gateway 上下文，并由可信层注入 email、tenant、roles 和 `X-Support-Copilot-Trusted-Identity`。
 - 客户可见回复仍必须经过人工审批。
 
 ## CI

@@ -48,13 +48,11 @@ Recommended order for the next phase:
 
 1. Freeze the current MVP baseline and run API, web build, E2E, and PostgreSQL integration checks in CI.
 2. Remove production-facing demo fallback behavior from the frontend so API failures are visible.
-3. Replace `NEXT_PUBLIC_*` demo identity with a trusted identity source and role-aware frontend navigation.
-4. Add a `/knowledge` workspace for document management and embedding ingestion.
-5. Add audit log APIs and an `/audit` workspace for approvals, tool calls, knowledge writes, and run activity.
-6. Connect real read-only tools for logs, metadata databases, Jira, or GitHub while preserving whitelist and redaction rules.
-7. Improve RAG and LLM quality with configurable embeddings, hybrid search, structured verifier checks, and regression evals.
-8. Move agent runs to async worker execution with progressive trace updates and retry handling.
-9. Harden deployment with migrations, environment profiles, health checks, secret management, backups, and observability.
+3. Connect a real enterprise SSO/OIDC/JWT provider or API gateway to the trusted identity header contract.
+4. Connect real read-only tools for logs, metadata databases, Jira, or GitHub while preserving whitelist and redaction rules.
+5. Improve RAG and LLM quality with configurable embeddings, hybrid search, structured verifier checks, and regression evals.
+6. Move agent runs to async worker execution with progressive trace updates and retry handling.
+7. Harden deployment with migrations, environment profiles, health checks, secret management, backups, and observability.
 
 ## Run The Backend
 
@@ -89,8 +87,8 @@ curl http://localhost:8000/api/health
 
 ## Auth, Tenant Scope, And RBAC
 
-All business APIs require an authenticated user context. The MVP expects these
-headers from a trusted private ingress, API gateway, or local frontend:
+All business APIs require an authenticated user context. In local development
+the API accepts demo identity headers:
 
 ```text
 X-User-Email: lead@acme.example
@@ -99,20 +97,34 @@ X-Tenant-Ids: acme
 X-User-Roles: support_agent,approver
 ```
 
+For staging and production set `SUPPORT_COPILOT_AUTH_MODE=trusted_headers`.
+The API then requires a private `X-Support-Copilot-Trusted-Identity` value from
+a trusted ingress, API gateway, SSO proxy, or the Next.js server. That trusted
+layer can inject `X-Support-Copilot-User-Email`, `X-Support-Copilot-Tenant-Id`,
+`X-Support-Copilot-Tenant-Ids`, and `X-Support-Copilot-User-Roles`, or map an
+OIDC/SSO context into the supported `X-Auth-Request-*` headers.
+
 `X-Tenant-Id` is the active tenant. `X-Tenant-Ids` is the authenticated tenant
 scope and defaults to the active tenant when omitted. Cross-tenant object reads
-return 404 so IDs from another tenant are not disclosed. Approval decisions
-require `approver` or `admin`; knowledge writes and embedding ingestion require
-`knowledge_admin` or `admin`.
+return 404 so IDs from another tenant are not disclosed.
 
-The local frontend sends these headers from:
+Current role surface:
 
 ```text
-NEXT_PUBLIC_SUPPORT_COPILOT_USER_EMAIL
-NEXT_PUBLIC_SUPPORT_COPILOT_TENANT_ID
-NEXT_PUBLIC_SUPPORT_COPILOT_TENANT_IDS
-NEXT_PUBLIC_SUPPORT_COPILOT_USER_ROLES
+support_agent    -> tickets, runs, trace
+approver         -> approvals, trace
+knowledge_admin  -> knowledge
+admin            -> tickets, approvals, knowledge, audit, admin
 ```
+
+The frontend calls `GET /api/auth/me` on startup, builds navigation from the
+returned roles, and hides actions the user cannot execute. Backend RBAC remains
+the security boundary for manual URL access and direct API calls.
+
+`NEXT_PUBLIC_SUPPORT_COPILOT_USER_EMAIL`, `NEXT_PUBLIC_SUPPORT_COPILOT_TENANT_ID`,
+`NEXT_PUBLIC_SUPPORT_COPILOT_TENANT_IDS`, and
+`NEXT_PUBLIC_SUPPORT_COPILOT_USER_ROLES` are local/demo-only identity defaults.
+Production-like environments ignore them as an identity source.
 
 ## Optional LLM API
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import Optional
 
 from fastapi import Depends, FastAPI, HTTPException
@@ -7,11 +8,16 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .agents import SupportAgentWorkflow
 from .auth import (
+    ADMIN_ROLES,
     APPROVAL_DECISION_ROLES,
+    APPROVAL_READ_ROLES,
+    KNOWLEDGE_READ_ROLES,
     KNOWLEDGE_WRITE_ROLES,
-    READ_ROLES,
     RUN_ROLES,
+    TICKET_READ_ROLES,
+    TRACE_READ_ROLES,
     Principal,
+    auth_status_from_env,
     get_current_principal,
     require_role,
     require_tenant_access,
@@ -111,14 +117,14 @@ def create_ticket(payload: CreateTicketRequest, principal: Principal = Depends(g
 
 @app.get("/api/tickets")
 def list_tickets(tenant_id: Optional[str] = None, principal: Principal = Depends(get_current_principal)) -> list:
-    require_role(principal, READ_ROLES, "Reading tickets requires a support role")
+    require_role(principal, TICKET_READ_ROLES, "Reading tickets requires support_agent or admin role")
     requested_tenant_id = resolve_tenant(principal, tenant_id)
     return to_dict(store.list_tickets(tenant_id=requested_tenant_id))
 
 
 @app.get("/api/tickets/{ticket_id}")
 def get_ticket(ticket_id: str, principal: Principal = Depends(get_current_principal)) -> dict:
-    require_role(principal, READ_ROLES, "Reading tickets requires a support role")
+    require_role(principal, TICKET_READ_ROLES, "Reading tickets requires support_agent or admin role")
     try:
         return to_dict(assert_ticket_access(ticket_id, principal))
     except NotFoundError as exc:
@@ -143,7 +149,7 @@ def start_run(ticket_id: str, principal: Principal = Depends(get_current_princip
 
 @app.get("/api/runs/{run_id}")
 def get_run(run_id: str, principal: Principal = Depends(get_current_principal)) -> dict:
-    require_role(principal, READ_ROLES, "Reading runs requires a support role")
+    require_role(principal, TRACE_READ_ROLES, "Reading runs requires support_agent, approver, or admin role")
     try:
         run = store.get_run(run_id)
         require_tenant_access(principal, run.tenant_id, hide=True)
@@ -156,7 +162,7 @@ def get_run(run_id: str, principal: Principal = Depends(get_current_principal)) 
 
 @app.get("/api/runs/{run_id}/trace")
 def get_trace(run_id: str, principal: Principal = Depends(get_current_principal)) -> dict:
-    require_role(principal, READ_ROLES, "Reading traces requires a support role")
+    require_role(principal, TRACE_READ_ROLES, "Reading traces requires support_agent, approver, or admin role")
     try:
         run = store.get_run(run_id)
         require_tenant_access(principal, run.tenant_id, hide=True)
@@ -179,7 +185,7 @@ def list_approvals(
     tenant_id: Optional[str] = None,
     principal: Principal = Depends(get_current_principal),
 ) -> list:
-    require_role(principal, APPROVAL_DECISION_ROLES, "Reading approvals requires approver or admin role")
+    require_role(principal, APPROVAL_READ_ROLES, "Reading approvals requires approver or admin role")
     requested_tenant_id = resolve_tenant(principal, tenant_id)
     approvals = []
     for approval in store.list_approvals(status=status):
@@ -269,6 +275,28 @@ def ingest_embeddings(payload: IngestEmbeddingsRequest, principal: Principal = D
 
 @app.get("/api/knowledge/documents")
 def list_documents(tenant_id: Optional[str] = None, principal: Principal = Depends(get_current_principal)) -> list:
-    require_role(principal, READ_ROLES, "Reading knowledge requires a support role")
+    require_role(principal, KNOWLEDGE_READ_ROLES, "Reading knowledge requires knowledge_admin or admin role")
     requested_tenant_id = resolve_tenant(principal, tenant_id)
     return to_dict(store.list_documents(tenant_id=requested_tenant_id))
+
+
+@app.get("/api/audit/logs")
+def list_audit_logs(tenant_id: Optional[str] = None, principal: Principal = Depends(get_current_principal)) -> list:
+    require_role(principal, ADMIN_ROLES, "Reading audit logs requires admin role")
+    requested_tenant_id = resolve_tenant(principal, tenant_id)
+    return to_dict(store.list_audit_logs(tenant_id=requested_tenant_id))
+
+
+@app.get("/api/admin/config")
+def get_admin_config(principal: Principal = Depends(get_current_principal)) -> dict:
+    require_role(principal, ADMIN_ROLES, "Reading system configuration requires admin role")
+    return {
+        "environment": os.getenv("APP_ENV", "development"),
+        "store": os.getenv("SUPPORT_COPILOT_STORE", "postgres"),
+        "auth": auth_status_from_env(),
+        "llm": llm_status_from_env(),
+        "tools": {
+            "allowed": sorted(workflow.tools.allowed_tools),
+            "configured_backends": workflow.tools.configured_backends(),
+        },
+    }
