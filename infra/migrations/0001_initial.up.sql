@@ -1,15 +1,3 @@
--- Current schema snapshot for Agentic Support Copilot.
---
--- Source of truth: infra/migrations/*.up.sql and *.down.sql.
--- Apply migrations with:
---
---   scripts/db_migrate.py status
---   scripts/db_migrate.py upgrade
---   scripts/db_migrate.py rollback-one
---
--- This file is kept as a human-readable snapshot and should not be mounted as
--- docker-entrypoint-initdb.d in staging or production.
-
 CREATE EXTENSION IF NOT EXISTS vector;
 
 CREATE TABLE IF NOT EXISTS tickets (

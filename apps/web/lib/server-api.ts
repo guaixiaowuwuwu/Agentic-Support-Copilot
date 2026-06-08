@@ -1,4 +1,5 @@
 import { cache } from "react";
+import { readFile } from "node:fs/promises";
 import { headers } from "next/headers";
 
 import type { UserContext } from "@support-copilot/shared";
@@ -32,7 +33,25 @@ const FORWARDED_IDENTITY_HEADERS: Array<[string, string[]]> = [
   ]
 ];
 
-async function serverIdentityHeaders(): Promise<Record<string, string>> {
+export function serverApiBaseUrl(): string {
+  return process.env.SUPPORT_COPILOT_API_BASE ?? apiConfig.baseUrl;
+}
+
+async function secretFromEnv(name: string): Promise<string | undefined> {
+  const directValue = process.env[name];
+  if (directValue) {
+    return directValue;
+  }
+
+  const filePath = process.env[`${name}_FILE`];
+  if (!filePath) {
+    return undefined;
+  }
+
+  return (await readFile(filePath, "utf-8")).trim();
+}
+
+export async function serverIdentityHeaders(): Promise<Record<string, string>> {
   const incoming = await headers();
   const requestHeaders: Record<string, string> = {};
 
@@ -44,8 +63,8 @@ async function serverIdentityHeaders(): Promise<Record<string, string>> {
   }
 
   const trustedSecret =
-    process.env.SUPPORT_COPILOT_API_TRUSTED_IDENTITY_SECRET ??
-    process.env.SUPPORT_COPILOT_TRUSTED_IDENTITY_SECRET;
+    (await secretFromEnv("SUPPORT_COPILOT_API_TRUSTED_IDENTITY_SECRET")) ??
+    (await secretFromEnv("SUPPORT_COPILOT_TRUSTED_IDENTITY_SECRET"));
   if (trustedSecret) {
     requestHeaders["X-Support-Copilot-Trusted-Identity"] = trustedSecret;
   }
@@ -58,7 +77,7 @@ async function serverIdentityHeaders(): Promise<Record<string, string>> {
 
 export async function serverApiGet<T>(path: string, demoFallback?: T): Promise<T> {
   try {
-    const response = await fetch(`${apiConfig.baseUrl}${path}`, {
+    const response = await fetch(`${serverApiBaseUrl()}${path}`, {
       cache: "no-store",
       headers: await serverIdentityHeaders()
     });

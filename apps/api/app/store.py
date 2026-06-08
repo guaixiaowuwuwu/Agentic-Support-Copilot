@@ -7,6 +7,8 @@ from threading import RLock
 from typing import Any, Dict, List, Optional, Protocol, Sequence
 from uuid import UUID
 
+from .config import env_bool, load_file_backed_environment
+from .db_migrations import default_migrations_path, migrate_database, migration_status
 from .knowledge import (
     DEFAULT_EMBEDDING_MODEL,
     EmbeddingModel,
@@ -54,6 +56,12 @@ class NotFoundError(KeyError):
 
 
 class Store(Protocol):
+    def healthcheck(self) -> dict[str, Any]:
+        ...
+
+    def migration_status(self) -> dict[str, Any]:
+        ...
+
     def seed(self) -> None:
         ...
 
@@ -155,6 +163,22 @@ class InMemoryStore:
 
         if seed:
             self.seed()
+
+    def healthcheck(self) -> dict[str, Any]:
+        return {
+            "status": "ok",
+            "type": "memory",
+        }
+
+    def migration_status(self) -> dict[str, Any]:
+        return {
+            "status": "not_applicable",
+            "current_version": None,
+            "applied": [],
+            "pending": [],
+            "unknown_applied": [],
+            "checksum_mismatches": [],
+        }
 
     def seed(self) -> None:
         if self.documents:
@@ -490,8 +514,21 @@ class InMemoryStore:
         return approval
 
 
+def default_schema_path() -> Path:
+    here = Path(__file__).resolve()
+    candidates = [Path.cwd() / "infra" / "schema.sql"]
+    for parent_index in (3, 1):
+        if len(here.parents) > parent_index:
+            candidates.append(here.parents[parent_index] / "infra" / "schema.sql")
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
+
+
 DEFAULT_DATABASE_URL = "postgresql://support:support@127.0.0.1:5432/support_copilot"
-DEFAULT_SCHEMA_PATH = Path(__file__).resolve().parents[3] / "infra" / "schema.sql"
+DEFAULT_SCHEMA_PATH = default_schema_path()
+DEFAULT_MIGRATIONS_PATH = default_migrations_path()
 
 
 def _uuid(value: str) -> UUID:
@@ -557,6 +594,7 @@ class PostgresStore:
         database_url: str = DEFAULT_DATABASE_URL,
         seed: bool = True,
         schema_path: Path = DEFAULT_SCHEMA_PATH,
+        migrations_path: Path = DEFAULT_MIGRATIONS_PATH,
         ensure_schema: bool = True,
         embedding_model: EmbeddingModel = DEFAULT_EMBEDDING_MODEL,
     ) -> None:
@@ -567,6 +605,7 @@ class PostgresStore:
 
         self.database_url = database_url
         self.schema_path = schema_path
+        self.migrations_path = migrations_path
         self._lock = RLock()
         self.embedding_model = embedding_model
 
@@ -585,9 +624,18 @@ class PostgresStore:
         return conn
 
     def ensure_schema(self) -> None:
-        schema_sql = self.schema_path.read_text(encoding="utf-8")
-        with self._lock, self._connect(register_vectors=False) as conn:
-            conn.execute(schema_sql)
+        migrate_database(self.database_url, self.migrations_path)
+
+    def healthcheck(self) -> dict[str, Any]:
+        with self._connect(register_vectors=False) as conn:
+            conn.execute("SELECT 1").fetchone()
+        return {
+            "status": "ok",
+            "type": "postgres",
+        }
+
+    def migration_status(self) -> dict[str, Any]:
+        return migration_status(self.database_url, self.migrations_path)
 
     def seed(self) -> None:
         if self.list_documents():
@@ -1672,10 +1720,19 @@ class PostgresStore:
 
 
 def create_store(seed: bool = True) -> Store:
+    load_file_backed_environment()
     backend = os.getenv("SUPPORT_COPILOT_STORE", "postgres").lower()
     embedding_model = create_embedding_model_from_env()
+    seed_env = os.getenv("SUPPORT_COPILOT_SEED_DEMO_DATA")
+    effective_seed = seed if seed_env is None else env_bool("SUPPORT_COPILOT_SEED_DEMO_DATA", default=seed)
     if backend in {"memory", "in_memory", "inmemory"}:
-        return InMemoryStore(seed=seed, embedding_model=embedding_model)
+        return InMemoryStore(seed=effective_seed, embedding_model=embedding_model)
 
     database_url = os.getenv("SUPPORT_COPILOT_DATABASE_URL") or os.getenv("DATABASE_URL") or DEFAULT_DATABASE_URL
-    return PostgresStore(database_url=database_url, seed=seed, embedding_model=embedding_model)
+    auto_migrate = env_bool("SUPPORT_COPILOT_AUTO_MIGRATE", default=True)
+    return PostgresStore(
+        database_url=database_url,
+        seed=effective_seed,
+        ensure_schema=auto_migrate,
+        embedding_model=embedding_model,
+    )

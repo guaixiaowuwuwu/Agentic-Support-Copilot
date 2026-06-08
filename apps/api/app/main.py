@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import os
 import time
+import urllib.error
+import urllib.request
 from typing import Any, Optional
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from .agents import SupportAgentWorkflow
@@ -25,6 +27,7 @@ from .auth import (
     require_tenant_access,
     resolve_tenant,
 )
+from .config import env_bool, load_file_backed_environment
 from .graph import WORKFLOW_NODES, graph_engine_name
 from .knowledge import embedding_provider_status_from_env
 from .llm import create_chat_client_from_env, llm_status_from_env
@@ -35,6 +38,7 @@ from .security import clip_text, redact_secrets
 from .store import NotFoundError, create_store
 from .tasks import RunTaskQueue
 from .tools import create_tool_registry_from_env
+from .time_utils import utc_now
 
 KNOWLEDGE_DOCUMENT_MAINTENANCE_POLICY = {
     "first_version": (
@@ -62,6 +66,7 @@ KNOWLEDGE_DOCUMENT_MAINTENANCE_POLICY = {
     ],
 }
 
+load_file_backed_environment()
 store = create_store(seed=True)
 workflow = SupportAgentWorkflow(store, tools=create_tool_registry_from_env(), chat_client=create_chat_client_from_env())
 run_queue = RunTaskQueue(workflow)
@@ -251,6 +256,103 @@ def tenant_embedding_summary(tenant_id: str) -> dict[str, Any]:
     }
 
 
+def _safe_dependency_check(name: str, checker) -> dict[str, Any]:
+    started = time.perf_counter()
+    try:
+        status = checker()
+        status.setdefault("status", "ok")
+    except Exception as exc:
+        status = {
+            "status": "error",
+            "error_type": exc.__class__.__name__,
+        }
+    status["latency_ms"] = int((time.perf_counter() - started) * 1000)
+    status["name"] = name
+    return status
+
+
+def _redis_health() -> dict[str, Any]:
+    redis_url = os.getenv("REDIS_URL") or os.getenv("SUPPORT_COPILOT_REDIS_URL")
+    required = env_bool("SUPPORT_COPILOT_READINESS_CHECK_REDIS", default=False)
+    if not redis_url:
+        return {"status": "not_configured", "required": required}
+
+    import redis
+
+    client = redis.from_url(redis_url, socket_connect_timeout=2, socket_timeout=2)
+    try:
+        client.ping()
+    finally:
+        client.close()
+    return {"status": "ok", "required": required}
+
+
+def _object_storage_health() -> dict[str, Any]:
+    endpoint = os.getenv("OBJECT_STORAGE_ENDPOINT") or os.getenv("SUPPORT_COPILOT_OBJECT_STORAGE_ENDPOINT")
+    required = env_bool("SUPPORT_COPILOT_READINESS_CHECK_OBJECT_STORAGE", default=False)
+    if not endpoint:
+        return {"status": "not_configured", "required": required}
+
+    health_url = os.getenv("SUPPORT_COPILOT_OBJECT_STORAGE_HEALTH_URL") or f"{endpoint.rstrip('/')}/minio/health/ready"
+    request = urllib.request.Request(health_url, method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=2) as response:
+            if response.status >= 400:
+                raise RuntimeError(f"object storage health returned HTTP {response.status}")
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"object storage health returned HTTP {exc.code}") from exc
+    return {"status": "ok", "required": required}
+
+
+def readiness_payload() -> dict[str, Any]:
+    store_status = _safe_dependency_check("store", store.healthcheck)
+    migrations = _safe_dependency_check("migrations", store.migration_status)
+    redis_status = _safe_dependency_check("redis", _redis_health)
+    object_storage_status = _safe_dependency_check("object_storage", _object_storage_health)
+    redis_status["required"] = bool(
+        redis_status.get("required") or env_bool("SUPPORT_COPILOT_READINESS_CHECK_REDIS", default=False)
+    )
+    object_storage_status["required"] = bool(
+        object_storage_status.get("required")
+        or env_bool("SUPPORT_COPILOT_READINESS_CHECK_OBJECT_STORAGE", default=False)
+    )
+    migration_ready = migrations["status"] in {"up_to_date", "not_applicable"}
+    required_dependencies = [store_status, migrations]
+    for dependency in (redis_status, object_storage_status):
+        if dependency.get("required"):
+            required_dependencies.append(dependency)
+
+    ready = all(dependency["status"] == "ok" for dependency in required_dependencies if dependency["name"] != "migrations")
+    ready = ready and migration_ready
+    return {
+        "status": "ready" if ready else "not_ready",
+        "checked_at": utc_now(),
+        "dependencies": {
+            "store": store_status,
+            "migrations": migrations,
+            "redis": redis_status,
+            "object_storage": object_storage_status,
+        },
+    }
+
+
+@app.get("/api/health/live")
+def liveness() -> dict[str, Any]:
+    return {
+        "status": "ok",
+        "service": "agentic-support-copilot-api",
+        "checked_at": utc_now(),
+    }
+
+
+@app.get("/api/health/ready")
+def readiness(response: Response) -> dict[str, Any]:
+    payload = readiness_payload()
+    if payload["status"] != "ready":
+        response.status_code = 503
+    return payload
+
+
 @app.get("/api/health")
 def health() -> dict:
     return {
@@ -265,6 +367,7 @@ def health() -> dict:
             "status": workflow.tools.config_status(),
         },
         "run_queue": active_run_queue().status(),
+        "readiness": readiness_payload(),
     }
 
 

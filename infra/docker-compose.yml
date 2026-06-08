@@ -10,7 +10,6 @@ services:
       - "5432:5432"
     volumes:
       - support_copilot_pg:/var/lib/postgresql/data
-      - ./schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U support -d support_copilot"]
       interval: 10s
@@ -20,8 +19,11 @@ services:
   redis:
     image: redis:7-alpine
     container_name: support-copilot-redis
+    command: ["redis-server", "--appendonly", "yes"]
     ports:
       - "6379:6379"
+    volumes:
+      - support_copilot_redis:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -40,8 +42,13 @@ services:
       - "9001:9001"
     volumes:
       - support_copilot_minio:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/minio/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
 volumes:
   support_copilot_pg:
+  support_copilot_redis:
   support_copilot_minio:
-

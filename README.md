@@ -41,6 +41,7 @@ docs          Future enhancement notes and planning docs
 
 - [Future Enhancements](docs/FUTURE_ENHANCEMENTS.md): staged roadmap for upgrading the MVP into an internal trial and enterprise PoC version.
 - [Environment Profiles](docs/ENVIRONMENTS.md): local, staging, production, and CI configuration baseline.
+- [Deployment Operations](docs/DEPLOYMENT_OPERATIONS.md): Docker images, staging compose, migrations, secrets, backup/restore, retention, and capacity baseline.
 
 ## Next Stage Roadmap
 

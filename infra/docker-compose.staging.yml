@@ -1,0 +1,149 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-support_copilot}
+      POSTGRES_USER: ${POSTGRES_USER:-support}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - support_copilot_staging_pg:/var/lib/postgresql/data
+    secrets:
+      - postgres_password
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-support} -d ${POSTGRES_DB:-support_copilot}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - support_copilot_staging_redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        export MINIO_ROOT_PASSWORD="$$(cat /run/secrets/minio_root_password)"
+        exec minio server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-support}
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - support_copilot_staging_minio:/data
+    secrets:
+      - minio_root_password
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/minio/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  api-migrate:
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+    env_file:
+      - ../.env.staging
+    environment:
+      SUPPORT_COPILOT_DATABASE_URL_FILE: /run/secrets/support_copilot_database_url
+    command: ["python", "-m", "app.db_migrations", "upgrade"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    secrets:
+      - support_copilot_database_url
+    restart: "no"
+
+  api:
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ../.env.staging
+    environment:
+      SUPPORT_COPILOT_DATABASE_URL_FILE: /run/secrets/support_copilot_database_url
+      SUPPORT_COPILOT_TRUSTED_IDENTITY_SECRET_FILE: /run/secrets/support_copilot_trusted_identity_secret
+      SUPPORT_COPILOT_AUTO_MIGRATE: "false"
+      REDIS_URL: redis://redis:6379/0
+      OBJECT_STORAGE_ENDPOINT: http://minio:9000
+      SUPPORT_COPILOT_OBJECT_STORAGE_HEALTH_URL: http://minio:9000/minio/health/ready
+      SUPPORT_COPILOT_READINESS_CHECK_REDIS: "true"
+      SUPPORT_COPILOT_READINESS_CHECK_OBJECT_STORAGE: "true"
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      api-migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    secrets:
+      - support_copilot_database_url
+      - support_copilot_trusted_identity_secret
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health/ready', timeout=3).read()"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+
+  web:
+    build:
+      context: ..
+      dockerfile: apps/web/Dockerfile
+      args:
+        NEXT_PUBLIC_API_BASE: ${NEXT_PUBLIC_API_BASE:-/support-api}
+        NEXT_PUBLIC_SUPPORT_COPILOT_ENV: staging
+    restart: unless-stopped
+    env_file:
+      - ../.env.staging
+    environment:
+      SUPPORT_COPILOT_API_BASE: http://api:8000
+      SUPPORT_COPILOT_API_TRUSTED_IDENTITY_SECRET_FILE: /run/secrets/support_copilot_trusted_identity_secret
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    secrets:
+      - support_copilot_trusted_identity_secret
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000').then((r)=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+
+volumes:
+  support_copilot_staging_pg:
+  support_copilot_staging_redis:
+  support_copilot_staging_minio:
+
+secrets:
+  postgres_password:
+    file: ./secrets/staging/postgres_password.txt
+  minio_root_password:
+    file: ./secrets/staging/minio_root_password.txt
+  support_copilot_database_url:
+    file: ./secrets/staging/support_copilot_database_url.txt
+  support_copilot_trusted_identity_secret:
+    file: ./secrets/staging/support_copilot_trusted_identity_secret.txt

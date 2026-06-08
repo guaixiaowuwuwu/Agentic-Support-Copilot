@@ -16,8 +16,13 @@ PLACEHOLDER_API_KEYS = {"", "replace-me", "changeme", "none", "null"}
 
 
 def load_project_env() -> None:
-    env_path = Path(__file__).resolve().parents[3] / ".env"
-    if not env_path.exists():
+    here = Path(__file__).resolve()
+    candidates = [Path.cwd() / ".env"]
+    for parent_index in (3, 1):
+        if len(here.parents) > parent_index:
+            candidates.append(here.parents[parent_index] / ".env")
+    env_path = next((candidate for candidate in candidates if candidate.exists()), None)
+    if env_path is None:
         return
 
     for raw_line in env_path.read_text(encoding="utf-8").splitlines():

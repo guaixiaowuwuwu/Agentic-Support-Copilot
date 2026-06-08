@@ -47,17 +47,21 @@ SUPPORT_COPILOT_STORE=memory SUPPORT_COPILOT_LLM_ENABLED=false
 APP_ENV=staging
 SUPPORT_COPILOT_STORE=postgres
 SUPPORT_COPILOT_DATABASE_URL=postgresql://support-copilot:<secret>@<staging-postgres>:5432/support_copilot
+SUPPORT_COPILOT_AUTO_MIGRATE=false
+SUPPORT_COPILOT_SEED_DEMO_DATA=false
 SUPPORT_COPILOT_LLM_ENABLED=false
 SUPPORT_COPILOT_ALLOWED_TOOLS=log_search,db_read,jira_search,github_search
 SUPPORT_COPILOT_AUTH_MODE=trusted_headers
 SUPPORT_COPILOT_TRUSTED_IDENTITY_SECRET=<secret-from-secret-manager>
 SUPPORT_COPILOT_API_TRUSTED_IDENTITY_SECRET=<secret-used-by-next-server-or-gateway>
-NEXT_PUBLIC_API_BASE=https://support-copilot-staging.example.com
+NEXT_PUBLIC_API_BASE=/support-api
+SUPPORT_COPILOT_API_BASE=http://api:8000
 ```
 
 约束：
 
 - 使用带 pgvector 的独立 staging 数据库。
+- 先运行迁移任务 `scripts/db_migrate.py upgrade` 或 staging compose 中的 `api-migrate`，再启动 API。
 - 不设置 `SUPPORT_COPILOT_TEST_DATABASE_URL` 指向 staging 主库。
 - `NEXT_PUBLIC_SUPPORT_COPILOT_*` 身份变量只用于本地/demo，不在 staging 作为身份源。
 - API 只接受带 `X-Support-Copilot-Trusted-Identity` 的可信身份上下文；该 secret 必须由可信 ingress / API gateway / SSO proxy / Next.js server 注入。
@@ -73,6 +77,8 @@ NEXT_PUBLIC_API_BASE=https://support-copilot-staging.example.com
 APP_ENV=production
 SUPPORT_COPILOT_STORE=postgres
 SUPPORT_COPILOT_DATABASE_URL=postgresql://support-copilot:<secret>@<production-postgres>:5432/support_copilot
+SUPPORT_COPILOT_AUTO_MIGRATE=false
+SUPPORT_COPILOT_SEED_DEMO_DATA=false
 SUPPORT_COPILOT_ALLOWED_TOOLS=log_search,db_read,jira_search,github_search
 SUPPORT_COPILOT_AUTH_MODE=trusted_headers
 SUPPORT_COPILOT_TRUSTED_IDENTITY_SECRET=<secret-from-secret-manager>
@@ -84,6 +90,7 @@ NEXT_PUBLIC_API_BASE=https://support-copilot.example.com
 
 - 禁止使用 `SUPPORT_COPILOT_STORE=memory`。
 - 禁止设置 `SUPPORT_COPILOT_TEST_DATABASE_URL`。
+- 禁止由 API replica 自动迁移 schema；必须使用受控 migration job，并保留 `schema_migrations` 记录。
 - 数据库账号、LLM key、Jira/GitHub token、只读 DB URL 必须来自 secret manager。
 - 禁止把 `NEXT_PUBLIC_SUPPORT_COPILOT_*` 当作真实身份源；浏览器可见配置只允许用于本地/demo。
 - 身份必须来自不可被浏览器伪造的 SSO / OIDC / JWT / API gateway 上下文，并由可信层注入 email、tenant、roles 和 `X-Support-Copilot-Trusted-Identity`。

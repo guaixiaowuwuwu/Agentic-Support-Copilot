@@ -2,6 +2,33 @@
 
 > 本日志按每次更新的能力内容分组，不按日期分组。
 
+## 企业 PoC 部署与运维基线
+
+### 新增
+- 新增 API 生产镜像构建方式，镜像内包含 API 代码、迁移文件和 liveness healthcheck，并默认关闭自动迁移和 demo seed。
+- 新增 Web 生产镜像构建方式，启用 Next.js standalone 输出，并新增 `/support-api/*` 服务器侧代理用于注入 trusted identity secret。
+- 新增版本化 SQL 迁移目录 `infra/migrations` 和迁移 CLI `scripts/db_migrate.py`，支持 `status`、`upgrade` 和单步 `rollback-one`。
+- 新增 staging compose：包含 PostgreSQL + pgvector、Redis AOF、MinIO、API migration job、API、Web、Docker secrets、持久化卷和服务健康检查。
+- 新增 `/api/health/live` 和 `/api/health/ready`，readiness 会检查 PostgreSQL、schema migration 状态、Redis 和对象存储。
+- 新增 `_FILE` secret 加载支持，API 可读取数据库 URL、trusted identity secret、LLM/API token 等文件挂载 secret，Web server 可读取 trusted identity secret 文件。
+- 新增 PostgreSQL 备份、恢复和 retention cleanup 脚本。
+- 新增部署运维文档，覆盖 staging 启动、secret 管理、备份恢复、日志保留、数据清理、容量和恢复策略。
+
+### 变更
+- PostgreSQL schema 初始化从直接挂载 `infra/schema.sql` 改为受控 migration job；`schema.sql` 仅保留为人类可读快照。
+- 本地 compose 移除 `schema.sql` entrypoint 初始化，Redis 开启 AOF 持久化，MinIO 增加 readiness healthcheck。
+- staging / production 配置基线改为先迁移后启动 API，避免多个 API replica 并发修改 schema。
+- Web 客户端生产路径默认走 `/support-api`，避免浏览器持有或伪造 trusted identity secret。
+- Docker 环境下的 API 路径解析改为候选路径查找，兼容本地仓库布局和容器内 `/app/app` 布局。
+
+### 验证
+- 后端单元测试通过：`.venv/bin/python -m unittest discover -s apps/api/tests`。
+- 前端 production build 通过：`npm --workspace apps/web run build`。
+- API Docker 镜像构建通过：`docker build -f apps/api/Dockerfile -t support-copilot-api:codex-check .`。
+- Web Docker 镜像构建通过：`docker build -f apps/web/Dockerfile -t support-copilot-web:codex-check --build-arg NEXT_PUBLIC_API_BASE=/support-api --build-arg NEXT_PUBLIC_SUPPORT_COPILOT_ENV=staging .`。
+- 临时 staging stack 演练通过：migration job 成功，`/api/health/ready` 返回 ready，创建工单后重启 API 仍能从 PostgreSQL 读回业务数据。
+- Docker compose 配置解析通过：`docker compose -f infra/docker-compose.yml config` 和 `docker compose -f infra/docker-compose.staging.yml --env-file .env.staging config`。
+
 ## 异步 Agent Run 与逐步 Trace
 
 ### 新增
