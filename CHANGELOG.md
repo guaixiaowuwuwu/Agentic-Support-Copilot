@@ -2,6 +2,31 @@
 
 > 本日志按每次更新的能力内容分组，不按日期分组。
 
+## v0.2 PoC 发布
+
+### 发布信息
+- Tag：`v0.2-poc`
+- 日期：2026-06-09
+- 范围：从 `v0.1-mvp` 到 v0.2 PoC 收尾，形成可运行、可截图、可讲解、可回归验证的企业客服 Copilot PoC。
+
+### 交付内容
+- 完成角色化企业工作台、真实错误态、审批队列、run trace、知识库、审计和管理员配置展示。
+- 完成 OpenAI-compatible LLM 与 embedding opt-in smoke 流程，默认仍保留 deterministic fallback，保证本地 demo 和 CI 稳定。
+- 补齐 README、SHOWCASE、RESUME_NOTES 和产品截图资产，支持 GitHub 阅读、面试讲解和简历展示。
+- 加固后端 RBAC、tenant scope、只读工具白名单、审计摘要、日志脱敏和 production-like trusted identity 边界说明。
+
+### 验证
+- `.venv/bin/python -m unittest discover -s apps/api/tests`：通过，45 tests OK，skipped=3。
+- `npm --workspace apps/web run build`：通过，Next.js 15.5.19 生产构建成功。
+- `npm run test:e2e`：通过，Playwright chromium，4 passed。
+- `SUPPORT_COPILOT_TEST_DATABASE_URL=postgresql://support:support@127.0.0.1:5432/support_copilot .venv/bin/python -m unittest apps/api/tests/test_postgres_store.py`：通过，PostgreSQL/pgvector opt-in，5 tests OK。
+- 已跟踪文件完成 secret/API key/真实客户数据扫描，未发现真实敏感值；命中项均为测试假值、占位符、demo secret 或 example 域名。
+
+### 发布备注
+- `README.md` 已记录 2026-06-09 完整验证结果。
+- CI workflow 继续覆盖 API unittest、Web production build、Playwright E2E 和 PostgreSQL integration。
+- `docs/assets/*.png` 六张展示截图均已纳入版本控制。
+
 ## 展示文档与简历材料
 
 ### 新增
