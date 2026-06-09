@@ -1,276 +1,180 @@
 # Agentic Support Copilot
 
-Enterprise knowledge base and ticket automation MVP with a multi-agent support workflow.
+Agentic Support Copilot 是一个面向私有化部署的企业智能客服 Copilot PoC：把工单接入、RAG 检索、只读工具调用、回复校验、人工审批和审计追踪串成一条可演示的闭环。
 
-## What Is Included
+> 核心演示场景：客户说 API 报 401，系统自动分诊、检索证据、调用只读排查工具、生成回复草稿，最后必须由人工审批后才形成客户可见回复。
 
-- FastAPI backend with a deterministic agent workflow:
-  `triage -> retrieval -> tool_call_optional -> verifier -> approval -> reply`.
-- Next.js dashboard with ticket list, ticket detail, approval queue, and run trace views.
-- PostgreSQL/pgvector-backed repository for tickets, runs, steps, approvals, documents, chunks, tool calls, and audit logs.
-- Configurable 1536-dimensional embeddings with deterministic hashing fallback, pgvector cosine retrieval, hybrid keyword/vector search, tenant-scoped evidence queries, and citation verification.
-- Optional in-memory store for fast local tests and demos.
-- Unit tests covering triage/RAG/verifier, tenant isolation, and tool permissions.
-- Optional OpenAI-compatible chat API integration for customer reply draft generation,
-  with deterministic template fallback when disabled or unavailable.
+## 产品截图
 
-## Current Completion Snapshot
+![Dashboard](docs/assets/dashboard.png)
 
-The project is past the empty-skeleton stage and is usable as a private MVP.
-The core support workflow, PostgreSQL/pgvector repository, tenant/RBAC guardrails,
-approval flow, trace view, read-only tool registry, optional LLM draft generation,
-frontend dashboard, unit tests, production build, and Playwright E2E path are all in place.
+| 工单详情 | 运行追踪 |
+| --- | --- |
+| ![工单详情](docs/assets/ticket-detail.png) | ![运行追踪](docs/assets/run-trace.png) |
 
-The next milestone is to move from "demoable MVP" to "internal trial / enterprise PoC".
-The main gaps are production identity, frontend role-based workspaces, knowledge
-management screens, audit log screens, production-grade RAG/LLM evaluation,
-async agent execution, and deployment operations.
+| 审批队列 | 知识库 |
+| --- | --- |
+| ![审批队列](docs/assets/approvals.png) | ![知识库](docs/assets/knowledge.png) |
 
-## Repository Layout
+![审计和系统配置](docs/assets/audit-admin.png)
 
-```text
-apps/api      FastAPI service and agent workflow
-apps/web      Next.js dashboard
-packages/shared  Shared TypeScript types
-infra         Docker Compose and SQL schema
-scripts       Local developer helpers
-docs          Future enhancement notes and planning docs
+## 工作流
+
+```mermaid
+flowchart LR
+  A["工单接入：API 401"] --> B["分诊"]
+  B --> C["租户隔离 RAG 检索"]
+  C --> D{"是否需要只读工具？"}
+  D -->|"是"| E["工具白名单：日志 / 数据库 / Jira / GitHub"]
+  D -->|"否"| F["回复草稿"]
+  E --> F
+  F --> G["校验器：引用和策略检查"]
+  G --> H{"人工审批"}
+  H -->|"批准"| I["最终回复"]
+  H -->|"驳回"| J["人工改写 / 继续跟进"]
+
+  C <--> K[("PostgreSQL + pgvector")]
+  F -. "可选" .-> L["OpenAI 兼容对话补全"]
+  C -. "可选" .-> M["OpenAI 兼容 Embedding"]
+  B --> N["运行追踪"]
+  E --> N
+  G --> N
+  H --> O["审计日志"]
 ```
 
-## Planning Docs
+## 核心功能
 
-- [Future Enhancements](docs/FUTURE_ENHANCEMENTS.md): staged roadmap for upgrading the MVP into an internal trial and enterprise PoC version.
-- [Environment Profiles](docs/ENVIRONMENTS.md): local, staging, production, and CI configuration baseline.
-- [Deployment Operations](docs/DEPLOYMENT_OPERATIONS.md): Docker images, staging compose, migrations, secrets, backup/restore, retention, and capacity baseline.
+- 端到端客服 Agent 工作流：`triage -> retrieval -> tool_call_optional -> reply_draft -> verifier -> human_approval`。
+- 角色化工作台：客服处理工单，审批人审核回复，知识库管理员维护文档，管理员查看审计和系统状态。
+- 租户隔离 RAG：知识文档、chunk、检索证据和工单都按 tenant scope 过滤，跨租户对象读取隐藏为 404。
+- 人工审批闭环：所有客户可见回复都先进入审批队列，批准后才写入最终回复。
+- 运行追踪：展示每次运行的节点、证据、工具调用、校验器结果、审批状态、trace ID 和 correlation ID。
+- 只读工具调用：日志、只读数据库、Jira、GitHub 走白名单和摘要化存储；写入型工具不在当前 PoC 范围内。
+- 审计与系统配置页：查看审批、工具、知识库写入、LLM 调用等审计记录，以及 auth、tool、LLM、embedding 的非敏感配置状态。
 
-## Next Stage Roadmap
+## 技术亮点
 
-Recommended order for the next phase:
+- **后端**：Python、FastAPI、Pydantic，显式 workflow 实现，保留 LangGraph-compatible 的节点设计。
+- **前端**：Next.js App Router、React、TypeScript、`lucide-react`，面向企业工作台的信息密度和权限状态。
+- **存储**：PostgreSQL + pgvector schema 覆盖 tickets、runs、steps、approvals、documents、chunks、tool calls、audit logs；本地也可切到 in-memory store。
+- **RAG**：deterministic hashing embedding 默认可离线运行；可 opt-in 使用 OpenAI-compatible embeddings；检索结合向量、关键词、metadata 和租户过滤。
+- **LLM**：可 opt-in 调 OpenAI-compatible `/chat/completions` 生成草稿；未配置或失败时回退 deterministic draft，保证 CI 和 demo 稳定。
+- **安全边界**：后端 RBAC 是真实边界；工具输出、审计 metadata、日志和 health/admin 配置都做脱敏和截断，不返回 API key、token 或 secret。
+- **验证**：Python `unittest`、Next.js 生产构建、Playwright E2E，以及 opt-in PostgreSQL/pgvector 集成测试和 OpenAI smoke。
 
-1. Freeze the current MVP baseline and run API, web build, E2E, and PostgreSQL integration checks in CI.
-2. Remove production-facing demo fallback behavior from the frontend so API failures are visible.
-3. Connect a real enterprise SSO/OIDC/JWT provider or API gateway to the trusted identity header contract.
-4. Connect real read-only tools for logs, metadata databases, Jira, or GitHub while preserving whitelist and redaction rules.
-5. Expand RAG and LLM quality with production embedding providers, hybrid search tuning, structured verifier checks, and regression evals.
-6. Move agent runs to async worker execution with progressive trace updates and retry handling.
-7. Harden deployment with migrations, environment profiles, health checks, secret management, backups, and observability.
+## 运行模式
 
-## Run The Backend
+### 1. 本地演示模式
 
-Start PostgreSQL first:
-
-```bash
-docker compose -f infra/docker-compose.yml up -d postgres
-```
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r apps/api/requirements.txt
-cd apps/api
-../../.venv/bin/uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
-```
-
-By default the API uses:
-
-```text
-postgresql://support:support@127.0.0.1:5432/support_copilot
-```
-
-Override it with `SUPPORT_COPILOT_DATABASE_URL` or `DATABASE_URL`. For a quick
-non-persistent demo, run the API with `SUPPORT_COPILOT_STORE=memory`.
-
-Health check:
-
-```bash
-curl http://localhost:8000/api/health
-```
-
-## Auth, Tenant Scope, And RBAC
-
-All business APIs require an authenticated user context. In local development
-the API accepts demo identity headers:
-
-```text
-X-User-Email: lead@acme.example
-X-Tenant-Id: acme
-X-Tenant-Ids: acme
-X-User-Roles: support_agent,approver
-```
-
-For staging and production set `SUPPORT_COPILOT_AUTH_MODE=trusted_headers`.
-The API then requires a private `X-Support-Copilot-Trusted-Identity` value from
-a trusted ingress, API gateway, SSO proxy, or the Next.js server. That trusted
-layer can inject `X-Support-Copilot-User-Email`, `X-Support-Copilot-Tenant-Id`,
-`X-Support-Copilot-Tenant-Ids`, and `X-Support-Copilot-User-Roles`, or map an
-OIDC/SSO context into the supported `X-Auth-Request-*` headers.
-
-`X-Tenant-Id` is the active tenant. `X-Tenant-Ids` is the authenticated tenant
-scope and defaults to the active tenant when omitted. Cross-tenant object reads
-return 404 so IDs from another tenant are not disclosed.
-
-Current role surface:
-
-```text
-support_agent    -> tickets, runs, trace
-approver         -> approvals, trace
-knowledge_admin  -> knowledge
-admin            -> tickets, approvals, knowledge, audit, admin
-```
-
-The frontend calls `GET /api/auth/me` on startup, builds navigation from the
-returned roles, and hides actions the user cannot execute. In local/demo mode,
-the first visit shows a role picker and stores the selected role in a local
-cookie; `NEXT_PUBLIC_SUPPORT_COPILOT_TENANT_ID` and
-`NEXT_PUBLIC_SUPPORT_COPILOT_TENANT_IDS` define that demo user's tenant scope.
-Backend RBAC remains the security boundary for manual URL access and direct API
-calls. Production-like environments ignore local identity headers and demo
-fallbacks as identity or data sources.
-
-## Optional LLM API
-
-The backend can call an OpenAI-compatible `/chat/completions` API when drafting
-the customer reply. If it is disabled, not configured, or temporarily fails, the
-workflow falls back to the deterministic template reply so local demos and tests
-keep working.
-
-```bash
-export SUPPORT_COPILOT_LLM_ENABLED=true
-export SUPPORT_COPILOT_LLM_BASE_URL=https://api.openai.com/v1
-export SUPPORT_COPILOT_LLM_MODEL=gpt-4.1-mini
-export SUPPORT_COPILOT_LLM_API_KEY=your-api-key
-```
-
-For local OpenAI-compatible runtimes such as Ollama, vLLM, or LM Studio, point
-`SUPPORT_COPILOT_LLM_BASE_URL` at that server and set
-`SUPPORT_COPILOT_LLM_MODEL` to the local model name. `/api/health` and
-`/api/admin/config` return only non-sensitive status, such as enabled mode,
-model name, and whether a base URL or API key is configured. They never return
-the actual base URL or API key.
-
-## Optional Embedding Provider
-
-By default the backend uses deterministic hashing embeddings so local tests and
-offline demos remain stable. Set an OpenAI-compatible `/embeddings` provider to
-generate vectors for new or pending document chunks and retrieval queries:
-
-```bash
-export SUPPORT_COPILOT_EMBEDDING_PROVIDER=openai_compatible
-export SUPPORT_COPILOT_EMBEDDING_BASE_URL=https://api.openai.com/v1
-export SUPPORT_COPILOT_EMBEDDING_MODEL=text-embedding-3-small
-export SUPPORT_COPILOT_EMBEDDING_API_KEY=your-api-key
-export SUPPORT_COPILOT_EMBEDDING_DIMENSIONS=1536
-```
-
-`SUPPORT_COPILOT_EMBEDDING_PROVIDER=hashing` remains the deterministic default
-for CI and offline demos. Set it to `openai_compatible` only for an opt-in
-smoke or environment that is allowed to call an external embedding API. See
-[`docs/OPENAI_SMOKE.md`](docs/OPENAI_SMOKE.md) for the end-to-end smoke flow.
-
-Knowledge documents can carry optional retrieval metadata:
-`product_line`, `version`, `required_permissions`, `valid_from`, `valid_until`,
-and `source_system`. Hybrid search combines keyword and vector scores, filters
-by tenant and metadata, and routes missing or low-confidence evidence to manual
-review. The verifier only passes replies whose citation lines match the actual
-retrieved evidence title and URI.
-
-## Read-Only External Tools
-
-Agent tool calls still go through an explicit whitelist:
-
-```bash
-export SUPPORT_COPILOT_ALLOWED_TOOLS=log_search,db_read,jira_search,github_search
-```
-
-Without external configuration, these tools keep deterministic demo summaries.
-To connect real private backends, configure only the read paths you want:
-
-```bash
-export SUPPORT_COPILOT_LOG_PATHS=/var/log/support-copilot/auth.log
-export SUPPORT_COPILOT_READONLY_DATABASE_URL=postgresql://readonly:readonly@localhost:5432/support_metadata
-export SUPPORT_COPILOT_READONLY_DB_QUERY='SELECT status, reason, updated_at FROM request_metadata WHERE tenant_id = %(tenant_id)s AND request_id = %(request_id)s LIMIT 5'
-export SUPPORT_COPILOT_JIRA_BASE_URL=https://example.atlassian.net
-export SUPPORT_COPILOT_JIRA_EMAIL=support@example.com
-export SUPPORT_COPILOT_JIRA_API_TOKEN=your-token
-export SUPPORT_COPILOT_JIRA_PROJECT_KEY=SUP
-export SUPPORT_COPILOT_GITHUB_REPOS=example-org/example-repo
-export SUPPORT_COPILOT_GITHUB_TOKEN=your-token
-export SUPPORT_COPILOT_TOOL_TIMEOUT_SECONDS=8
-export SUPPORT_COPILOT_TOOL_RETRY_COUNT=1
-export SUPPORT_COPILOT_TOOL_RESULT_LIMIT=5
-```
-
-The DB tool rejects non-`SELECT`/`WITH` SQL, requires an explicit
-`tenant_id = :tenant_id` or `tenant_id = %(tenant_id)s` filter, drops returned
-rows that expose a different `tenant_id`, and opens PostgreSQL transactions as
-read-only. Jira and GitHub integrations retry transient read failures and search
-existing issues only; they do not create or update external tickets. Every
-allowed, failed, or denied tool call is stored as a redacted and truncated
-`ToolCall` summary and also recorded in `audit_logs`. `/api/health` and the
-admin page expose non-sensitive tool status only, such as configured backend
-type, read-only mode, timeout, retry count, and result limit.
-
-Backfill missing chunk embeddings after importing or migrating documents:
-
-```bash
-curl -X POST http://localhost:8000/api/knowledge/embeddings/ingest \
-  -H 'Content-Type: application/json' \
-  -H 'X-User-Email: kb-admin@acme.example' \
-  -H 'X-Tenant-Id: acme' \
-  -H 'X-Tenant-Ids: acme' \
-  -H 'X-User-Roles: knowledge_admin' \
-  -d '{"tenant_id":"acme"}'
-```
-
-## Run The Frontend
+用于本地演示和快速回归，不依赖外部 LLM 或数据库持久化。
 
 ```bash
 npm install
-npm --workspace apps/web run dev
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r apps/api/requirements.txt
 ```
 
-Open [http://localhost:3000](http://localhost:3000).
+启动 API：
 
-## Run Tests
+```bash
+cd apps/api
+SUPPORT_COPILOT_STORE=memory \
+SUPPORT_COPILOT_LLM_ENABLED=false \
+  ../../.venv/bin/uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+```
 
-After installing the API requirements, run the backend tests from the project root.
-The workflow tests include a fixed RAG eval set for 401, billing, bug, outage,
-and general tickets, and assert hit rate, citation accuracy, no-evidence
-blocking, and tenant isolation metrics:
+启动 Web：
+
+```bash
+NEXT_PUBLIC_API_BASE=http://127.0.0.1:8000 \
+NEXT_PUBLIC_SUPPORT_COPILOT_LOCAL_IDENTITY_HEADERS=true \
+  npm --workspace apps/web run dev -- --hostname 127.0.0.1 --port 3000
+```
+
+打开 [http://127.0.0.1:3000](http://127.0.0.1:3000)。首次访问会显示本地角色选择页，选择“客服专员”即可创建 API 401 工单并自动启动一次 Agent run。
+
+如果要验证 PostgreSQL/pgvector 持久化：
+
+```bash
+docker compose -f infra/docker-compose.yml up -d postgres
+SUPPORT_COPILOT_STORE=postgres \
+SUPPORT_COPILOT_DATABASE_URL=postgresql://support:support@127.0.0.1:5432/support_copilot
+```
+
+### 2. OpenAI 演示模式
+
+用于有 OpenAI-compatible key 时演示真实 LLM 草稿和 embedding ingestion。该模式必须显式 opt-in，CI 默认不运行。
+
+```bash
+SUPPORT_COPILOT_LLM_ENABLED=true \
+SUPPORT_COPILOT_LLM_BASE_URL=https://api.openai.com/v1 \
+SUPPORT_COPILOT_LLM_MODEL=gpt-4.1-mini \
+SUPPORT_COPILOT_LLM_API_KEY="$OPENAI_API_KEY" \
+SUPPORT_COPILOT_EMBEDDING_PROVIDER=openai_compatible \
+SUPPORT_COPILOT_EMBEDDING_BASE_URL=https://api.openai.com/v1 \
+SUPPORT_COPILOT_EMBEDDING_MODEL=text-embedding-3-small \
+SUPPORT_COPILOT_EMBEDDING_API_KEY="$OPENAI_API_KEY" \
+  .venv/bin/python scripts/openai_smoke.py
+```
+
+Smoke 脚本会创建一篇 API 401 runbook、生成 embeddings、创建 401 工单、启动 run，并检查 `llm_call_completed` 审计记录。详见 [docs/OPENAI_SMOKE.md](docs/OPENAI_SMOKE.md)。
+
+### 3. 类生产可信身份模式
+
+用于 staging / 类生产环境验证身份边界，不把浏览器可伪造的 demo header 当作真实身份来源。
+
+```bash
+APP_ENV=staging
+SUPPORT_COPILOT_STORE=postgres
+SUPPORT_COPILOT_DATABASE_URL=postgresql://support-copilot:<secret>@<postgres>:5432/support_copilot
+SUPPORT_COPILOT_AUTH_MODE=trusted_headers
+SUPPORT_COPILOT_TRUSTED_IDENTITY_SECRET=<secret-from-secret-manager>
+SUPPORT_COPILOT_API_TRUSTED_IDENTITY_SECRET=<secret-used-by-next-server-or-gateway>
+NEXT_PUBLIC_API_BASE=/support-api
+SUPPORT_COPILOT_API_BASE=http://api:8000
+```
+
+可信入口、API 网关、SSO 代理或 Next.js server 负责注入 `X-Support-Copilot-Trusted-Identity`、email、tenant 和 roles。前端只控制体验，后端仍会对直接 URL 和直接 API 调用执行 RBAC、tenant scope 和审计。
+
+更多环境约束见 [docs/ENVIRONMENTS.md](docs/ENVIRONMENTS.md) 和 [docs/DEPLOYMENT_OPERATIONS.md](docs/DEPLOYMENT_OPERATIONS.md)。
+
+## 验证命令
+
+常规回归：
 
 ```bash
 .venv/bin/python -m unittest discover -s apps/api/tests
-```
-
-Without `SUPPORT_COPILOT_TEST_DATABASE_URL`, the PostgreSQL integration tests are
-skipped. Configure that variable to include persistence and pgvector coverage.
-
-The browser E2E test starts an in-memory API server and a Next.js dev server on
-dedicated ports, then covers ticket creation, agent run startup, approval,
-language switching, and trace rendering:
-
-```bash
+npm --workspace apps/web run build
 npm run test:e2e
 ```
 
-If Chromium is not installed for Playwright yet, run:
-
-```bash
-npx playwright install chromium
-```
-
-PostgreSQL persistence tests are opt-in because they truncate their target
-database:
+PostgreSQL/pgvector 集成测试是 opt-in，目标库会被测试清理：
 
 ```bash
 SUPPORT_COPILOT_TEST_DATABASE_URL=postgresql://support:support@127.0.0.1:5432/support_copilot \
   .venv/bin/python -m unittest apps/api/tests/test_postgres_store.py
 ```
 
-## Infrastructure
+最近验证结果：
 
-Start local private-deployment dependencies:
+| 日期 | 命令 | 结果 | 备注 |
+| --- | --- | --- | --- |
+| 2026-06-09 | `npm --workspace apps/web run build` | 通过 | Next.js 15.5.19 生产构建成功 |
 
-```bash
-docker compose -f infra/docker-compose.yml up -d
-```
+注意：不要在 `next dev` 正在运行时执行 `next build`。两者共用 `.next`，可能导致开发态 chunk 或 CSS 产物异常。
+
+## 安全边界和非生产声明
+
+- 这是一个真实可运行的企业客服 Copilot PoC，不是已上线的生产 SaaS。
+- 客户可见回复必须经过人工审批；当前没有自动发送外部客户消息的写入型工具。
+- 本地 demo 的角色选择和身份头只用于开发演示；staging / 类生产环境必须使用 trusted headers、SSO/OIDC/JWT 或 API 网关注入身份。
+- RAG 检索、工单、审批、trace 和审计按租户隔离；跨租户资源不暴露存在性。
+- LLM、embedding、工具和日志链路只保存摘要化、脱敏后的信息；health/admin 页面不返回真实 secret。
+- 生产化还需要接入真实企业 SSO、正式权限治理、异步队列、可观测性、RAG/LLM eval、备份恢复、安全评审和运维 SLA。
+
+## 展示材料
+
+- [docs/SHOWCASE.md](docs/SHOWCASE.md)：5 分钟面试演示脚本，从 API 401 工单走完整闭环。
+- [docs/RESUME_NOTES.md](docs/RESUME_NOTES.md)：中英文简历 bullet、STAR 讲法和常见追问答案。
+- [docs/V0_2_POC_TASK_PLAN.md](docs/V0_2_POC_TASK_PLAN.md)：v0.2 PoC 收尾计划。

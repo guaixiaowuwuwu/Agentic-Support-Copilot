@@ -2,6 +2,21 @@
 
 > 本日志按每次更新的能力内容分组，不按日期分组。
 
+## 展示文档与简历材料
+
+### 新增
+- 新增 `docs/SHOWCASE.md`，提供 5 分钟演示脚本，从 API 401 工单走到分诊、RAG evidence、只读工具调用、verifier、人工审批、最终回复和审计追踪。
+- 新增 `docs/RESUME_NOTES.md`，整理中文简历 bullet、英文简历 bullet、STAR 讲法、面试常见追问答案和不可夸大的 PoC 边界。
+
+### 变更
+- README 首页重写为中文展示结构，首屏说明项目定位、产品截图、工作流、核心功能、技术亮点、三种运行模式、验证命令、安全边界和非生产声明。
+- README 复用现有截图资产，并补充面试展示材料入口，方便 GitHub 阅读和现场演示。
+- README 明确 local demo、OpenAI 演示模式和类生产可信身份模式的差异，避免把本地角色选择或 demo header 表述成生产身份方案。
+
+### 验证
+- 前端 production build 通过：`npm --workspace apps/web run build`。
+- diff 格式检查通过：`git diff --check`。
+
 ## 企业工作台截图收尾
 
 ### 新增
