@@ -62,6 +62,9 @@ export function defaultPathForLoginRole(role: LoginRole): string {
   if (role === "knowledge_admin") {
     return "/knowledge";
   }
+  if (role === "admin") {
+    return "/audit";
+  }
   return "/";
 }
 

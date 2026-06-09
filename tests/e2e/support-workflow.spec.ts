@@ -8,6 +8,72 @@ function idFromURL(url: string, pattern: RegExp): string {
   return match?.[1] ?? "";
 }
 
+test("local role selection routes each role to its workspace", async ({ page }) => {
+  const cases = [
+    {
+      button: /客服专员/,
+      heading: "工单",
+      url: /\/$/
+    },
+    {
+      button: /审批人/,
+      heading: "审批队列",
+      url: /\/approvals$/
+    },
+    {
+      button: /知识库管理员/,
+      heading: "知识库",
+      url: /\/knowledge$/
+    },
+    {
+      button: /^管理员 /,
+      heading: "审计日志",
+      url: /\/audit$/
+    }
+  ];
+
+  for (const roleCase of cases) {
+    await page.context().clearCookies();
+    await page.goto("/");
+    await expect(page.getByRole("heading", { name: "选择登录角色", exact: true })).toBeVisible();
+    await page.getByRole("button", { name: roleCase.button }).click();
+    await expect(page).toHaveURL(roleCase.url);
+    await expect(page.getByRole("heading", { name: roleCase.heading, exact: true })).toBeVisible();
+  }
+});
+
+test("direct restricted and missing resources show explicit states", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "选择登录角色", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: /客服专员/ }).click();
+  await expect(page.getByRole("heading", { name: "工单", exact: true })).toBeVisible();
+
+  await page.goto("/knowledge");
+  await expect(page.getByRole("heading", { name: "知识库", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "权限不足", exact: true })).toBeVisible();
+  await expect(page.getByText("当前角色不能打开这个工作台。")).toBeVisible();
+
+  await page.goto(`/tickets/missing-${Date.now().toString(36)}`);
+  await expect(page.getByRole("heading", { name: "未找到资源", exact: true })).toBeVisible();
+  await expect(page.getByText("该资源不存在，或当前租户无权查看。")).toBeVisible();
+  await expect(page.getByText("demo-ticket-api-401")).toHaveCount(0);
+});
+
+test("admin can open audit and system configuration", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "选择登录角色", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: /^管理员 / }).click();
+
+  await expect(page).toHaveURL(/\/audit$/);
+  await expect(page.getByRole("heading", { name: "审计日志", exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: /系统/ })).toBeVisible();
+
+  await page.getByRole("link", { name: /系统/ }).click();
+  await expect(page).toHaveURL(/\/admin$/);
+  await expect(page.getByRole("heading", { name: "管理员", exact: true })).toBeVisible();
+  await expect(page.getByText("身份模式")).toBeVisible();
+});
+
 test("support agent workflow covers ticket creation, run start, approval, language toggle, and trace", async ({
   page,
   request

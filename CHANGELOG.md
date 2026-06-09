@@ -2,6 +2,21 @@
 
 > 本日志按每次更新的能力内容分组，不按日期分组。
 
+## 本地角色选择与 production-like 错误态收尾
+
+### 新增
+- 本地 demo 首次访问现在通过角色选择页进入对应工作台：`support_agent` 进入工单，`approver` 进入审批队列，`knowledge_admin` 进入知识库，`admin` 进入审计并可继续打开系统配置。
+- E2E 新增角色选择覆盖，验证四类角色默认落点、管理员审计 / 系统配置入口、无权限直达页面的权限状态，以及缺失资源的 404 状态不回退 demo 数据。
+
+### 变更
+- Web production-like 环境判定补齐 `SUPPORT_COPILOT_ENV`、`APP_ENV`、`ENVIRONMENT`、`VERCEL_ENV`，并识别 `prod` / `stage` / `staging` / `preview` / `production`，确保 staging / production-like 禁用 demo fallback 和本地身份头。
+- 本地角色选择继续只作为前端体验控制，所有页面仍先通过 `GET /api/auth/me` 获取当前用户上下文，后端 RBAC 仍是手动 URL 访问和直接 API 调用的安全边界。
+- `.env.example`、README、环境配置基线和 Playwright 启动配置移除旧的固定前端用户 / 角色变量说明，改为记录本地角色 cookie + 租户范围模型。
+
+### 验证
+- 浏览器 E2E 通过：`npm run test:e2e`。
+- 前端 production build 通过：`npm --workspace apps/web run build`。
+
 ## 企业 PoC 部署与运维基线
 
 ### 新增

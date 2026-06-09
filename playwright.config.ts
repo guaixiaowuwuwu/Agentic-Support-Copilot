@@ -39,10 +39,9 @@ export default defineConfig({
       timeout: 60_000,
       env: {
         NEXT_PUBLIC_API_BASE: apiBaseURL,
-        NEXT_PUBLIC_SUPPORT_COPILOT_USER_EMAIL: "lead@acme.example",
+        NEXT_PUBLIC_SUPPORT_COPILOT_LOCAL_IDENTITY_HEADERS: "true",
         NEXT_PUBLIC_SUPPORT_COPILOT_TENANT_ID: "acme",
-        NEXT_PUBLIC_SUPPORT_COPILOT_TENANT_IDS: "acme",
-        NEXT_PUBLIC_SUPPORT_COPILOT_USER_ROLES: "support_agent,approver"
+        NEXT_PUBLIC_SUPPORT_COPILOT_TENANT_IDS: "acme"
       }
     }
   ],

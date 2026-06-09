@@ -119,13 +119,13 @@ admin            -> tickets, approvals, knowledge, audit, admin
 ```
 
 The frontend calls `GET /api/auth/me` on startup, builds navigation from the
-returned roles, and hides actions the user cannot execute. Backend RBAC remains
-the security boundary for manual URL access and direct API calls.
-
-`NEXT_PUBLIC_SUPPORT_COPILOT_USER_EMAIL`, `NEXT_PUBLIC_SUPPORT_COPILOT_TENANT_ID`,
-`NEXT_PUBLIC_SUPPORT_COPILOT_TENANT_IDS`, and
-`NEXT_PUBLIC_SUPPORT_COPILOT_USER_ROLES` are local/demo-only identity defaults.
-Production-like environments ignore them as an identity source.
+returned roles, and hides actions the user cannot execute. In local/demo mode,
+the first visit shows a role picker and stores the selected role in a local
+cookie; `NEXT_PUBLIC_SUPPORT_COPILOT_TENANT_ID` and
+`NEXT_PUBLIC_SUPPORT_COPILOT_TENANT_IDS` define that demo user's tenant scope.
+Backend RBAC remains the security boundary for manual URL access and direct API
+calls. Production-like environments ignore local identity headers and demo
+fallbacks as identity or data sources.
 
 ## Optional LLM API
 

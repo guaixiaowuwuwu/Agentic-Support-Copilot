@@ -15,11 +15,15 @@ const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
 const APP_ENV =
   (
     process.env.NEXT_PUBLIC_SUPPORT_COPILOT_ENV ??
+    process.env.SUPPORT_COPILOT_ENV ??
     process.env.NEXT_PUBLIC_VERCEL_ENV ??
+    process.env.VERCEL_ENV ??
+    process.env.APP_ENV ??
+    process.env.ENVIRONMENT ??
     process.env.NODE_ENV ??
     "development"
   ).toLowerCase();
-const PRODUCTION_LIKE_ENVS = new Set(["production", "staging", "preview"]);
+const PRODUCTION_LIKE_ENVS = new Set(["production", "prod", "staging", "stage", "preview"]);
 const DEMO_MODE_ENABLED =
   process.env.NEXT_PUBLIC_SUPPORT_COPILOT_DEMO_MODE === "true" && !PRODUCTION_LIKE_ENVS.has(APP_ENV);
 const LOCAL_IDENTITY_HEADERS_ENABLED =
