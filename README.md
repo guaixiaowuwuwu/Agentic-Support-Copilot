@@ -136,14 +136,17 @@ keep working.
 
 ```bash
 export SUPPORT_COPILOT_LLM_ENABLED=true
-export LLM_BASE_URL=https://api.openai.com/v1
-export LLM_MODEL=gpt-4.1-mini
-export LLM_API_KEY=your-api-key
+export SUPPORT_COPILOT_LLM_BASE_URL=https://api.openai.com/v1
+export SUPPORT_COPILOT_LLM_MODEL=gpt-4.1-mini
+export SUPPORT_COPILOT_LLM_API_KEY=your-api-key
 ```
 
 For local OpenAI-compatible runtimes such as Ollama, vLLM, or LM Studio, point
-`LLM_BASE_URL` at that server and set `LLM_MODEL` to the local model name. The
-API key and base URL are never returned by `/api/health`.
+`SUPPORT_COPILOT_LLM_BASE_URL` at that server and set
+`SUPPORT_COPILOT_LLM_MODEL` to the local model name. `/api/health` and
+`/api/admin/config` return only non-sensitive status, such as enabled mode,
+model name, and whether a base URL or API key is configured. They never return
+the actual base URL or API key.
 
 ## Optional Embedding Provider
 
@@ -158,6 +161,11 @@ export SUPPORT_COPILOT_EMBEDDING_MODEL=text-embedding-3-small
 export SUPPORT_COPILOT_EMBEDDING_API_KEY=your-api-key
 export SUPPORT_COPILOT_EMBEDDING_DIMENSIONS=1536
 ```
+
+`SUPPORT_COPILOT_EMBEDDING_PROVIDER=hashing` remains the deterministic default
+for CI and offline demos. Set it to `openai_compatible` only for an opt-in
+smoke or environment that is allowed to call an external embedding API. See
+[`docs/OPENAI_SMOKE.md`](docs/OPENAI_SMOKE.md) for the end-to-end smoke flow.
 
 Knowledge documents can carry optional retrieval metadata:
 `product_line`, `version`, `required_permissions`, `valid_from`, `valid_until`,

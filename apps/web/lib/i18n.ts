@@ -241,7 +241,13 @@ export const dictionaries = {
       modeBlocked: "已阻断写工具",
       modeDisabled: "未启用",
       llm: "LLM",
-      embeddings: "Embedding"
+      embeddings: "Embedding",
+      provider: "提供方",
+      model: "模型",
+      baseUrlConfigured: "Base URL 已配置",
+      apiKeyConfigured: "API key 已配置",
+      dimensions: "维度",
+      rateLimit: "限流/分钟"
     },
     trace: {
       title: "运行追踪",
@@ -516,7 +522,13 @@ export const dictionaries = {
       modeBlocked: "Write tool blocked",
       modeDisabled: "Disabled",
       llm: "LLM",
-      embeddings: "Embeddings"
+      embeddings: "Embeddings",
+      provider: "Provider",
+      model: "Model",
+      baseUrlConfigured: "Base URL configured",
+      apiKeyConfigured: "API key configured",
+      dimensions: "Dimensions",
+      rateLimit: "Rate limit/min"
     },
     trace: {
       title: "Trace",

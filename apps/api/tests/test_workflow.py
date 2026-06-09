@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import sqlite3
 import tempfile
@@ -14,8 +15,14 @@ API_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(API_ROOT))
 
 from app.agents import PromptConfig, SupportAgentWorkflow
-from app.knowledge import EMBEDDING_DIMENSIONS, KeywordRetriever, RetrievalFilters, VectorRetriever
-from app.llm import LLMError, LLMSettings, OpenAICompatibleChatClient
+from app.knowledge import (
+    EMBEDDING_DIMENSIONS,
+    KeywordRetriever,
+    RetrievalFilters,
+    VectorRetriever,
+    embedding_provider_status_from_env,
+)
+from app.llm import LLMError, LLMSettings, OpenAICompatibleChatClient, llm_status_from_env
 from app.models import Document, Evidence, Ticket
 from app.store import InMemoryStore
 from app.tasks import RunTaskQueue
@@ -1003,6 +1010,36 @@ class SupportWorkflowTest(unittest.TestCase):
             self.assertEqual(client.complete([{"role": "user", "content": "hello"}]), "ok")
             with self.assertRaises(LLMError):
                 client.complete([{"role": "user", "content": "hello again"}])
+
+    def test_provider_statuses_report_configuration_without_secrets(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "SUPPORT_COPILOT_LLM_ENABLED": "true",
+                "SUPPORT_COPILOT_LLM_BASE_URL": "https://api.openai.example/v1",
+                "SUPPORT_COPILOT_LLM_MODEL": "gpt-4.1-mini",
+                "SUPPORT_COPILOT_LLM_API_KEY": "sk-secret-llm-key",
+                "SUPPORT_COPILOT_EMBEDDING_PROVIDER": "openai_compatible",
+                "SUPPORT_COPILOT_EMBEDDING_BASE_URL": "https://api.openai.example/v1",
+                "SUPPORT_COPILOT_EMBEDDING_MODEL": "text-embedding-3-small",
+                "SUPPORT_COPILOT_EMBEDDING_API_KEY": "sk-secret-embedding-key",
+            },
+            clear=False,
+        ):
+            llm_status = llm_status_from_env()
+            embedding_status = embedding_provider_status_from_env()
+
+        self.assertTrue(llm_status["enabled"])
+        self.assertEqual(llm_status["mode"], "openai_compatible")
+        self.assertEqual(llm_status["model"], "gpt-4.1-mini")
+        self.assertTrue(llm_status["base_url_configured"])
+        self.assertTrue(llm_status["api_key_configured"])
+        self.assertEqual(embedding_status["mode"], "openai_compatible")
+        self.assertEqual(embedding_status["model"], "text-embedding-3-small")
+        self.assertTrue(embedding_status["base_url_configured"])
+        self.assertTrue(embedding_status["api_key_configured"])
+        self.assertNotIn("sk-secret", str(llm_status))
+        self.assertNotIn("sk-secret", str(embedding_status))
 
     def test_config_status_blocks_write_tools_without_exposing_backend_secrets(self) -> None:
         registry = ToolRegistry(

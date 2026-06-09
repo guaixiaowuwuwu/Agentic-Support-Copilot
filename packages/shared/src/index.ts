@@ -191,6 +191,28 @@ export interface ToolConfigStatus {
   [key: string]: string | number | boolean | null | undefined;
 }
 
+export interface LlmStatus {
+  enabled: boolean;
+  mode: string;
+  base_url_configured: boolean;
+  api_key_configured?: boolean;
+  model?: string | null;
+  timeout_seconds?: number;
+  retry_count?: number;
+  rate_limit_per_minute?: number;
+  [key: string]: string | number | boolean | null | undefined;
+}
+
+export interface EmbeddingProviderStatus {
+  provider: string;
+  mode: string;
+  model?: string | null;
+  base_url_configured: boolean;
+  api_key_configured?: boolean;
+  dimensions?: number;
+  [key: string]: string | number | boolean | null | undefined;
+}
+
 export interface AdminConfig {
   environment: string;
   store: string;
@@ -201,8 +223,8 @@ export interface AdminConfig {
     trusted_identity_secret_configured: boolean;
     local_dev_headers_enabled: boolean;
   };
-  llm: Record<string, unknown>;
-  embeddings?: Record<string, unknown>;
+  llm: LlmStatus;
+  embeddings?: EmbeddingProviderStatus;
   tools: {
     allowed: string[];
     configured_backends: string[];

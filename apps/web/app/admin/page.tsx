@@ -1,5 +1,5 @@
 import type { AdminConfig, ToolConfigStatus } from "@support-copilot/shared";
-import { KeyRound, Settings, ShieldCheck, Wrench } from "lucide-react";
+import { Bot, Database, KeyRound, Settings, ShieldCheck, Wrench } from "lucide-react";
 
 import { ApiErrorState, StatePanel } from "@/components/page-state";
 import { demoAdminConfig } from "@/lib/api";
@@ -10,7 +10,7 @@ import { getCurrentUserResult, serverApiGet } from "@/lib/server-api";
 export const dynamic = "force-dynamic";
 
 function modeBadgeClass(mode: string) {
-  if (mode === "configured") {
+  if (mode === "configured" || mode === "openai_compatible") {
     return "badge-green";
   }
   if (mode === "blocked_write_tool") {
@@ -86,9 +86,20 @@ export default async function AdminPage() {
   const modeLabels: Record<string, string> = {
     configured: dict.admin.modeConfigured,
     deterministic_fallback: dict.admin.modeFallback,
+    hashing_fallback: dict.admin.modeFallback,
+    openai_compatible: dict.admin.modeConfigured,
     blocked_write_tool: dict.admin.modeBlocked,
     disabled: dict.admin.modeDisabled
   };
+  const embeddings = config.embeddings ?? {
+    provider: "-",
+    mode: "hashing_fallback",
+    model: null,
+    base_url_configured: false,
+    api_key_configured: false
+  };
+  const llmMode = config.llm.mode ?? (config.llm.enabled ? "openai_compatible" : "deterministic_fallback");
+  const embeddingMode = embeddings.mode;
 
   return (
     <main className="page">
@@ -191,18 +202,76 @@ export default async function AdminPage() {
         </div>
       </section>
 
-      <section className="surface">
-        <div className="surface-header">
-          <h2>{dict.admin.llm}</h2>
+      <section className="detail-grid">
+        <div className="surface">
+          <div className="surface-header">
+            <h2>{dict.admin.llm}</h2>
+            <span className={`badge ${modeBadgeClass(llmMode)}`}>{modeLabels[llmMode] ?? llmMode}</span>
+          </div>
+          <div className="list">
+            <article className="list-item">
+              <div className="list-head">
+                <strong>{dict.admin.enabled}</strong>
+                <span className={`badge ${config.llm.enabled ? "badge-green" : "badge-neutral"}`}>
+                  {config.llm.enabled ? dict.admin.yes : dict.admin.no}
+                </span>
+              </div>
+              <div className="tool-status-meta">
+                <span>
+                  <Bot size={14} aria-hidden="true" /> {dict.admin.model}: {config.llm.model ?? "-"}
+                </span>
+                <span>
+                  <Settings size={14} aria-hidden="true" /> {dict.admin.baseUrlConfigured}:{" "}
+                  {config.llm.base_url_configured ? dict.admin.yes : dict.admin.no}
+                </span>
+                <span>
+                  <KeyRound size={14} aria-hidden="true" /> {dict.admin.apiKeyConfigured}:{" "}
+                  {config.llm.api_key_configured ? dict.admin.yes : dict.admin.no}
+                </span>
+                {typeof config.llm.rate_limit_per_minute === "number" ? (
+                  <span>
+                    {dict.admin.rateLimit}: {config.llm.rate_limit_per_minute}
+                  </span>
+                ) : null}
+              </div>
+            </article>
+          </div>
         </div>
-        <pre className="reply-preview">{JSON.stringify(config.llm, null, 2)}</pre>
-      </section>
 
-      <section className="surface">
-        <div className="surface-header">
-          <h2>{dict.admin.embeddings}</h2>
+        <div className="surface">
+          <div className="surface-header">
+            <h2>{dict.admin.embeddings}</h2>
+            <span className={`badge ${modeBadgeClass(embeddingMode)}`}>
+              {modeLabels[embeddingMode] ?? embeddingMode}
+            </span>
+          </div>
+          <div className="list">
+            <article className="list-item">
+              <div className="list-head">
+                <strong>{embeddings.provider}</strong>
+                <span className="badge badge-neutral">{dict.admin.provider}</span>
+              </div>
+              <div className="tool-status-meta">
+                <span>
+                  <Database size={14} aria-hidden="true" /> {dict.admin.model}: {embeddings.model ?? "-"}
+                </span>
+                <span>
+                  <Settings size={14} aria-hidden="true" /> {dict.admin.baseUrlConfigured}:{" "}
+                  {embeddings.base_url_configured ? dict.admin.yes : dict.admin.no}
+                </span>
+                <span>
+                  <KeyRound size={14} aria-hidden="true" /> {dict.admin.apiKeyConfigured}:{" "}
+                  {embeddings.api_key_configured ? dict.admin.yes : dict.admin.no}
+                </span>
+                {typeof embeddings.dimensions === "number" ? (
+                  <span>
+                    {dict.admin.dimensions}: {embeddings.dimensions}
+                  </span>
+                ) : null}
+              </div>
+            </article>
+          </div>
         </div>
-        <pre className="reply-preview">{JSON.stringify(config.embeddings ?? {}, null, 2)}</pre>
       </section>
     </main>
   );

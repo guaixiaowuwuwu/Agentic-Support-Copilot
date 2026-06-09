@@ -879,6 +879,12 @@ tr:last-child td {
   font-weight: 700;
 }
 
+.tool-status-meta span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
 .list {
   display: grid;
   gap: 0;

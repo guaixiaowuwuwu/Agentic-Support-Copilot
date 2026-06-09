@@ -264,11 +264,18 @@ export const demoAdminConfig: AdminConfig = {
     local_dev_headers_enabled: true
   },
   llm: {
-    enabled: false
+    enabled: false,
+    mode: "deterministic_fallback",
+    base_url_configured: false,
+    api_key_configured: false,
+    model: null
   },
   embeddings: {
     provider: "hashing",
     mode: "hashing_fallback",
+    model: null,
+    base_url_configured: false,
+    api_key_configured: false,
     dimensions: 1536
   },
   tools: {

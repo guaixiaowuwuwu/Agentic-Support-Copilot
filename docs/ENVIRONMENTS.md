@@ -37,6 +37,32 @@ SUPPORT_COPILOT_STORE=memory SUPPORT_COPILOT_LLM_ENABLED=false
 
 这条路径必须保留，用来快速回归 401 工单闭环。
 
+## OpenAI demo
+
+用途：本地有 OpenAI-compatible key 时，验证真实 LLM 草稿和 embedding ingestion。该路径必须 opt-in，CI 不运行。
+
+推荐配置：
+
+```bash
+SUPPORT_COPILOT_STORE=memory
+SUPPORT_COPILOT_LLM_ENABLED=true
+SUPPORT_COPILOT_LLM_BASE_URL=https://api.openai.com/v1
+SUPPORT_COPILOT_LLM_MODEL=gpt-4.1-mini
+SUPPORT_COPILOT_LLM_API_KEY=<secret>
+SUPPORT_COPILOT_EMBEDDING_PROVIDER=openai_compatible
+SUPPORT_COPILOT_EMBEDDING_BASE_URL=https://api.openai.com/v1
+SUPPORT_COPILOT_EMBEDDING_MODEL=text-embedding-3-small
+SUPPORT_COPILOT_EMBEDDING_API_KEY=<secret>
+```
+
+运行：
+
+```bash
+.venv/bin/python scripts/openai_smoke.py
+```
+
+缺少任意必需变量时，smoke 会清晰说明并以跳过方式退出。`/api/health` 和 `/api/admin/config` 只展示 enabled、provider、model、base URL configured、API key configured 等非敏感状态，不展示真实 base URL、API key、token 或 secret。
+
 ## Staging
 
 用途：内部试用、企业 PoC 预发验证。

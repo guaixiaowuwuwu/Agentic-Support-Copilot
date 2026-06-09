@@ -295,6 +295,7 @@ def llm_status_from_env() -> Dict[str, object]:
         "enabled": settings.enabled,
         "mode": "openai_compatible" if settings.enabled else "deterministic_fallback",
         "base_url_configured": bool(settings.base_url),
+        "api_key_configured": _usable_api_key(settings.api_key),
         "model": settings.model or None,
         "timeout_seconds": settings.timeout_seconds,
         "retry_count": settings.retry_count,

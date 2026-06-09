@@ -88,6 +88,7 @@ API 支持通用 `_FILE` 环境变量，例如：
 SUPPORT_COPILOT_DATABASE_URL_FILE=/run/secrets/support_copilot_database_url
 SUPPORT_COPILOT_TRUSTED_IDENTITY_SECRET_FILE=/run/secrets/support_copilot_trusted_identity_secret
 SUPPORT_COPILOT_LLM_API_KEY_FILE=/run/secrets/llm_api_key
+SUPPORT_COPILOT_EMBEDDING_API_KEY_FILE=/run/secrets/embedding_api_key
 SUPPORT_COPILOT_GITHUB_TOKEN_FILE=/run/secrets/github_token
 ```
 

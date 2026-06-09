@@ -253,6 +253,11 @@ def embedding_provider_status_from_env() -> Dict[str, object]:
         "mode": mode,
         "model": settings.model if mode == "openai_compatible" else None,
         "base_url_configured": bool(settings.base_url) if mode == "openai_compatible" else False,
+        "api_key_configured": (
+            settings.api_key.strip().lower() not in PLACEHOLDER_API_KEYS
+            if mode == "openai_compatible"
+            else False
+        ),
         "dimensions": settings.dimensions,
     }
 

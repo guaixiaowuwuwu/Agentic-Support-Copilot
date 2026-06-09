@@ -2,6 +2,28 @@
 
 > 本日志按每次更新的能力内容分组，不按日期分组。
 
+## OpenAI opt-in smoke 与非敏感状态展示
+
+### 新增
+- 新增 `scripts/openai_smoke.py`，用于本地有 OpenAI-compatible key 时验证真实 LLM 草稿和 embedding ingestion；缺少必需环境变量、LLM 未开启或 key 仍是 placeholder 时会清晰跳过并返回 0。
+- 新增 `docs/OPENAI_SMOKE.md`，记录 OpenAI demo 所需环境变量、运行命令、smoke 验证内容和安全边界。
+- `/api/health` 和 `/api/admin/config` 的 LLM / embedding 状态增加 `api_key_configured` 布尔字段，便于 Admin 页面展示配置完整性。
+- `/admin` 页面新增可扫描的 LLM 与 Embedding 状态面板，展示 enabled、provider、model、base URL configured、API key configured、维度和限流等非敏感状态。
+- 共享 TypeScript 类型新增 `LlmStatus` 和 `EmbeddingProviderStatus`。
+
+### 变更
+- README、`.env.example`、`.env.staging.example`、环境配置基线和部署运维文档统一补齐 `SUPPORT_COPILOT_LLM_*` 与 `SUPPORT_COPILOT_EMBEDDING_*` 配置说明。
+- OpenAI-compatible 配置继续保持 opt-in；默认 CI、本地测试和离线 demo 仍使用 deterministic LLM fallback 与 hashing embedding。
+- 健康检查和 Admin 页面只展示 model/provider 与 configured 布尔状态，不展示真实 base URL、API key、token 或 secret。
+- Admin 页面不再直接渲染 LLM / embedding JSON dump，改为企业工作台风格的状态行。
+
+### 验证
+- 后端单元测试通过：`.venv/bin/python -m unittest discover -s apps/api/tests`。
+- 前端 production build 通过：`npm --workspace apps/web run build`。
+- 无 key 路径 smoke 通过：`.venv/bin/python scripts/openai_smoke.py`，确认清晰 skip 且返回 0。
+- 本地 fake OpenAI-compatible 服务 smoke 通过，覆盖 `/embeddings` ingestion、`/chat/completions` LLM draft、run 到达审批和 `llm_call_completed` audit success。
+- 已用 in-app Browser 验证 `/admin` LLM / Embedding 状态渲染，浏览器 console 无错误。
+
 ## 本地角色选择与 production-like 错误态收尾
 
 ### 新增
