@@ -160,7 +160,11 @@ SUPPORT_COPILOT_TEST_DATABASE_URL=postgresql://support:support@127.0.0.1:5432/su
 
 | 日期 | 命令 | 结果 | 备注 |
 | --- | --- | --- | --- |
+| 2026-06-09 | `.venv/bin/python -m unittest discover -s apps/api/tests` | 通过 | 45 tests OK，skipped=3 |
 | 2026-06-09 | `npm --workspace apps/web run build` | 通过 | Next.js 15.5.19 生产构建成功 |
+| 2026-06-09 | `npm run test:e2e` | 通过 | Playwright chromium，4 passed |
+| 2026-06-09 | `SUPPORT_COPILOT_TEST_DATABASE_URL=postgresql://support:support@127.0.0.1:5432/support_copilot .venv/bin/python -m unittest apps/api/tests/test_postgres_store.py` | 通过 | PostgreSQL/pgvector opt-in，5 tests OK |
+| 2026-06-09 | `git ls-files -z \| xargs -0 rg ...` | 通过 | 已跟踪文件未发现真实 secret、API key 或真实客户数据；仅命中测试假值、占位符和 example 域名 |
 
 注意：不要在 `next dev` 正在运行时执行 `next build`。两者共用 `.next`，可能导致开发态 chunk 或 CSS 产物异常。
 
