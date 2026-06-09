@@ -132,6 +132,34 @@ textarea {
   font-weight: 650;
 }
 
+.role-switcher {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.role-select-label {
+  display: inline-grid;
+  gap: 2px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.role-select {
+  min-height: 38px;
+  min-width: 146px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0 10px;
+  background: #fff;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 750;
+}
+
 .language-toggle {
   display: inline-flex;
   align-items: center;
@@ -293,6 +321,87 @@ textarea {
   margin: 0;
   font-size: 16px;
   letter-spacing: 0;
+}
+
+.login-page {
+  display: grid;
+  min-height: calc(100vh - 64px);
+  place-items: center;
+}
+
+.login-panel {
+  width: min(720px, 100%);
+}
+
+.login-panel .surface-header {
+  align-items: flex-start;
+}
+
+.login-panel h1 {
+  margin: 2px 0 0;
+  font-size: 30px;
+  line-height: 1.08;
+  letter-spacing: 0;
+}
+
+.role-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  padding: 16px;
+}
+
+.role-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  min-height: 104px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 15px;
+  background: #fff;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+}
+
+.role-card:hover {
+  border-color: rgba(15, 118, 110, 0.34);
+  background: #f6fbf8;
+}
+
+.role-card:disabled {
+  opacity: 0.62;
+  cursor: wait;
+}
+
+.role-card-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 8px;
+  background: var(--surface-alt);
+  color: var(--accent-strong);
+  flex: 0 0 auto;
+}
+
+.role-card strong,
+.role-card small {
+  display: block;
+}
+
+.role-card strong {
+  font-size: 15px;
+}
+
+.role-card small {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.45;
 }
 
 .ticket-form {
@@ -809,6 +918,11 @@ tr:last-child td {
     justify-content: space-between;
   }
 
+  .role-switcher {
+    flex: 1 1 auto;
+    flex-wrap: wrap;
+  }
+
   .user-chip {
     flex: 1 1 auto;
     max-width: calc(100% - 96px);
@@ -819,7 +933,8 @@ tr:last-child td {
   .detail-grid,
   .trace-grid,
   .form-row,
-  .audit-filter-grid {
+  .audit-filter-grid,
+  .role-grid {
     grid-template-columns: 1fr;
   }
 }

@@ -1,16 +1,21 @@
 import { cache } from "react";
 import { readFile } from "node:fs/promises";
-import { headers } from "next/headers";
+import { cookies, headers } from "next/headers";
 
 import type { UserContext } from "@support-copilot/shared";
 
 import {
   apiConfig,
   apiErrorFromResponse,
-  localDevIdentityHeaders,
-  localDevUserContext,
   normalizeApiError
 } from "@/lib/api";
+import {
+  identityHeadersForUser,
+  loginRoleCookieName,
+  normalizeLoginRole,
+  type LoginRole,
+  userContextForLoginRole
+} from "@/lib/local-auth";
 
 export type LoadResult<T> = { ok: true; data: T } | { ok: false; error: unknown };
 
@@ -37,6 +42,16 @@ export function serverApiBaseUrl(): string {
   return process.env.SUPPORT_COPILOT_API_BASE ?? apiConfig.baseUrl;
 }
 
+export const getSelectedLoginRole = cache(async (): Promise<LoginRole | null> => {
+  const cookieStore = await cookies();
+  return normalizeLoginRole(cookieStore.get(loginRoleCookieName)?.value);
+});
+
+export const getLocalDevUserContext = cache(async (): Promise<UserContext | null> => {
+  const role = await getSelectedLoginRole();
+  return role ? userContextForLoginRole(role) : null;
+});
+
 async function secretFromEnv(name: string): Promise<string | undefined> {
   const directValue = process.env[name];
   if (directValue) {
@@ -54,6 +69,7 @@ async function secretFromEnv(name: string): Promise<string | undefined> {
 export async function serverIdentityHeaders(): Promise<Record<string, string>> {
   const incoming = await headers();
   const requestHeaders: Record<string, string> = {};
+  const localUser = await getLocalDevUserContext();
 
   for (const [targetHeader, sourceHeaders] of FORWARDED_IDENTITY_HEADERS) {
     const value = sourceHeaders.map((sourceHeader) => incoming.get(sourceHeader)).find(Boolean);
@@ -70,7 +86,7 @@ export async function serverIdentityHeaders(): Promise<Record<string, string>> {
   }
 
   return {
-    ...localDevIdentityHeaders(),
+    ...(apiConfig.localIdentityHeaders ? identityHeadersForUser(localUser) : {}),
     ...requestHeaders
   };
 }
@@ -102,5 +118,6 @@ export async function loadResult<T>(promise: Promise<T>): Promise<LoadResult<T>>
 }
 
 export const getCurrentUserResult = cache(async (): Promise<LoadResult<UserContext>> => {
-  return loadResult(serverApiGet<UserContext>("/api/auth/me", localDevUserContext));
+  const localUser = await getLocalDevUserContext();
+  return loadResult(serverApiGet<UserContext>("/api/auth/me", localUser ?? undefined));
 });

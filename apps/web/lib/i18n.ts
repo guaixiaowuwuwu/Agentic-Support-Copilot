@@ -24,6 +24,30 @@ export const dictionaries = {
       ariaLabel: "切换语言",
       title: "切换到英文"
     },
+    auth: {
+      eyebrow: "本地 Demo 登录",
+      title: "选择登录角色",
+      switchRole: "切换角色",
+      currentRole: "当前角色",
+      roles: {
+        support_agent: {
+          label: "客服专员",
+          description: "处理工单、启动运行、查看追踪"
+        },
+        approver: {
+          label: "审批人",
+          description: "审核客户可见回复草稿"
+        },
+        knowledge_admin: {
+          label: "知识库管理员",
+          description: "维护文档和 Embedding"
+        },
+        admin: {
+          label: "管理员",
+          description: "查看审计与系统配置"
+        }
+      }
+    },
     common: {
       run: "运行",
       trace: "追踪",
@@ -274,6 +298,30 @@ export const dictionaries = {
     languageToggle: {
       ariaLabel: "Switch language",
       title: "Switch to Chinese"
+    },
+    auth: {
+      eyebrow: "Local demo sign-in",
+      title: "Choose a role",
+      switchRole: "Switch role",
+      currentRole: "Current role",
+      roles: {
+        support_agent: {
+          label: "Support agent",
+          description: "Create tickets, start runs, inspect traces"
+        },
+        approver: {
+          label: "Approver",
+          description: "Review customer-facing reply drafts"
+        },
+        knowledge_admin: {
+          label: "Knowledge admin",
+          description: "Maintain documents and embeddings"
+        },
+        admin: {
+          label: "Admin",
+          description: "View audit logs and system configuration"
+        }
+      }
     },
     common: {
       run: "Run",

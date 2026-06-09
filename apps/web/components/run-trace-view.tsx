@@ -13,7 +13,15 @@ import { dictionaries, normalizeLocale, type Locale } from "@/lib/i18n";
 
 const activeRunStatuses = new Set(["queued", "running"]);
 
-export function RunTraceView({ initialTrace, locale }: { initialTrace: RunTrace; locale?: Locale }) {
+export function RunTraceView({
+  initialTrace,
+  locale,
+  canManageRun = false
+}: {
+  initialTrace: RunTrace;
+  locale?: Locale;
+  canManageRun?: boolean;
+}) {
   const router = useRouter();
   const activeLocale = normalizeLocale(locale);
   const dict = dictionaries[activeLocale];
@@ -100,13 +108,13 @@ export function RunTraceView({ initialTrace, locale }: { initialTrace: RunTrace;
         </div>
         <div className="action-stack">
           <div className="title-actions">
-            {trace.run.status === "failed" ? (
+            {canManageRun && trace.run.status === "failed" ? (
               <button className="icon-button" onClick={retryRun} disabled={isBusy} title={dict.trace.retryRun}>
                 <RefreshCw size={17} />
                 <span>{dict.trace.retryRun}</span>
               </button>
             ) : null}
-            {activeRunStatuses.has(trace.run.status) ? (
+            {canManageRun && activeRunStatuses.has(trace.run.status) ? (
               <button className="icon-button reject" onClick={cancelRun} disabled={isBusy} title={dict.trace.cancelRun}>
                 <XCircle size={17} />
                 <span>{dict.trace.cancelRun}</span>

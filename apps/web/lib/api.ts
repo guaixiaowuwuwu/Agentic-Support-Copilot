@@ -9,6 +9,8 @@ import type {
   UserContext
 } from "@support-copilot/shared";
 
+import { getBrowserLoginRole, identityHeadersForUser, userContextForLoginRole } from "@/lib/local-auth";
+
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
 const APP_ENV =
   (
@@ -56,33 +58,15 @@ export const apiConfig = {
   localIdentityHeaders: LOCAL_IDENTITY_HEADERS_ENABLED
 };
 
-function splitCsv(value: string | undefined, fallback: string[]): string[] {
-  const items = value
-    ?.split(",")
-    .map((item) => item.trim())
-    .filter(Boolean);
-  return items?.length ? items : fallback;
-}
+export const localDevUserContext: UserContext = userContextForLoginRole("support_agent");
 
-export const localDevUserContext: UserContext = {
-  email: process.env.NEXT_PUBLIC_SUPPORT_COPILOT_USER_EMAIL ?? "lead@acme.example",
-  tenant_id: process.env.NEXT_PUBLIC_SUPPORT_COPILOT_TENANT_ID ?? "acme",
-  tenant_ids: splitCsv(process.env.NEXT_PUBLIC_SUPPORT_COPILOT_TENANT_IDS, [
-    process.env.NEXT_PUBLIC_SUPPORT_COPILOT_TENANT_ID ?? "acme"
-  ]),
-  roles: splitCsv(process.env.NEXT_PUBLIC_SUPPORT_COPILOT_USER_ROLES, ["support_agent", "approver"])
-};
-
-export function localDevIdentityHeaders(): Record<string, string> {
+export function localDevIdentityHeaders(userContext?: UserContext | null): Record<string, string> {
   if (!LOCAL_IDENTITY_HEADERS_ENABLED) {
     return {};
   }
-  return {
-    "X-User-Email": localDevUserContext.email,
-    "X-Tenant-Id": localDevUserContext.tenant_id,
-    "X-Tenant-Ids": localDevUserContext.tenant_ids.join(","),
-    "X-User-Roles": localDevUserContext.roles.join(",")
-  };
+  const browserRole = userContext ? null : getBrowserLoginRole();
+  const activeUser = userContext ?? (browserRole ? userContextForLoginRole(browserRole) : null);
+  return identityHeadersForUser(activeUser);
 }
 
 async function readResponseDetail(response: Response): Promise<string> {

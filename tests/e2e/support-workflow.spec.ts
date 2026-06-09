@@ -25,6 +25,8 @@ test("support agent workflow covers ticket creation, run start, approval, langua
 
   await test.step("switch language without losing dashboard rendering", async () => {
     await page.goto("/");
+    await expect(page.getByRole("heading", { name: "选择登录角色", exact: true })).toBeVisible();
+    await page.getByRole("button", { name: /客服专员/ }).click();
     await expect(page.getByRole("heading", { name: "工单", exact: true })).toBeVisible();
 
     await page.getByRole("button", { name: "切换语言" }).click();
@@ -75,7 +77,7 @@ test("support agent workflow covers ticket creation, run start, approval, langua
   });
 
   await test.step("approve the target run from the approval queue", async () => {
-    await page.getByRole("link", { name: "审批" }).click();
+    await page.getByRole("combobox", { name: "切换角色" }).selectOption("approver");
     await expect(page.getByRole("heading", { name: "审批队列", exact: true })).toBeVisible();
 
     const approvalCard = page.locator("article.surface").filter({
@@ -89,6 +91,7 @@ test("support agent workflow covers ticket creation, run start, approval, langua
   });
 
   await test.step("show the approved final reply on the ticket", async () => {
+    await page.getByRole("combobox", { name: "切换角色" }).selectOption("support_agent");
     await page.goto(`/tickets/${ticketId}`);
     await expect(page.getByRole("heading", { name: subject, exact: true })).toBeVisible();
     const finalReplySection = page.locator("section.surface").filter({

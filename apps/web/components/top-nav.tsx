@@ -3,7 +3,9 @@ import { BookOpenText, Bot, ClipboardList, ScrollText, Settings, ShieldCheck, Us
 import Link from "next/link";
 
 import { LanguageToggle } from "@/components/language-toggle";
+import { RoleSwitcher } from "@/components/role-session";
 import type { Dictionary, Locale } from "@/lib/i18n";
+import type { LoginRole } from "@/lib/local-auth";
 import { defaultPathForUser, navigationForUser, type WorkspaceId } from "@/lib/rbac";
 
 const navIcons: Record<WorkspaceId, typeof ClipboardList> = {
@@ -17,11 +19,15 @@ const navIcons: Record<WorkspaceId, typeof ClipboardList> = {
 export function TopNav({
   dict,
   locale,
-  user
+  user,
+  localRoleSwitchEnabled = false,
+  selectedLoginRole
 }: {
   dict: Dictionary;
   locale: Locale;
   user?: UserContext | null;
+  localRoleSwitchEnabled?: boolean;
+  selectedLoginRole?: LoginRole | null;
 }) {
   const navItems = user ? navigationForUser(user, dict) : [];
   const homeHref = user ? defaultPathForUser(user) : "/";
@@ -46,11 +52,15 @@ export function TopNav({
             })}
           </nav>
         ) : null}
-        <div className="user-chip" title={user ? `${user.email} · ${user.roles.join(", ")}` : dict.state.authTitle}>
-          <UserRound size={16} />
-          <span>{user?.tenant_id ?? "-"}</span>
-          <small>{user?.email ?? dict.state.authTitle}</small>
-        </div>
+        {localRoleSwitchEnabled && selectedLoginRole ? (
+          <RoleSwitcher locale={locale} currentRole={selectedLoginRole} user={user} />
+        ) : (
+          <div className="user-chip" title={user ? `${user.email} · ${user.roles.join(", ")}` : dict.state.authTitle}>
+            <UserRound size={16} />
+            <span>{user?.tenant_id ?? "-"}</span>
+            <small>{user?.email ?? dict.state.authTitle}</small>
+          </div>
+        )}
         <LanguageToggle locale={locale} />
       </div>
     </header>

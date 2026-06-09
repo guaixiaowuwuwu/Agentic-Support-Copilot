@@ -31,7 +31,9 @@ export default async function RunTracePage({ params }: { params: Promise<{ runId
     );
   }
 
-  if (!hasCapability(userResult.data, "trace")) {
+  const user = userResult.data;
+
+  if (!hasCapability(user, "trace")) {
     return (
       <main className="page">
         <section className="page-title">
@@ -67,5 +69,5 @@ export default async function RunTracePage({ params }: { params: Promise<{ runId
     );
   }
 
-  return <RunTraceView initialTrace={trace} locale={locale} />;
+  return <RunTraceView initialTrace={trace} locale={locale} canManageRun={hasCapability(user, "start_run")} />;
 }
