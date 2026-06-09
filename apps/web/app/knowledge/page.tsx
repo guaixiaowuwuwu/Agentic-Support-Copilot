@@ -1,5 +1,5 @@
 import type { Document as KnowledgeDocument } from "@support-copilot/shared";
-import { BookOpenText } from "lucide-react";
+import { BookOpenText, CheckCircle2, Database, Layers3 } from "lucide-react";
 
 import { KnowledgeActions } from "@/components/knowledge-actions";
 import { ApiErrorState, StatePanel } from "@/components/page-state";
@@ -68,6 +68,13 @@ export default async function KnowledgePage() {
     );
   }
 
+  const totalChunks = documents.reduce((sum, document) => sum + (document.chunk_count ?? 0), 0);
+  const readyDocuments = documents.filter((document) => document.embedding_status === "embedded").length;
+  const pendingDocuments = documents.filter((document) => {
+    const status = document.embedding_status ?? "pending";
+    return status === "pending" || status === "partial";
+  }).length;
+
   return (
     <main className="page">
       <section className="page-title">
@@ -78,6 +85,29 @@ export default async function KnowledgePage() {
         <div className="queue-count">
           <BookOpenText size={18} />
           <strong>{documents.length}</strong>
+        </div>
+      </section>
+
+      <section className="metrics-grid" aria-label={dict.knowledge.metricsLabel}>
+        <div className="metric">
+          <BookOpenText size={20} />
+          <span>{dict.knowledge.totalDocuments}</span>
+          <strong>{documents.length}</strong>
+        </div>
+        <div className="metric">
+          <Layers3 size={20} />
+          <span>{dict.knowledge.totalChunks}</span>
+          <strong>{totalChunks}</strong>
+        </div>
+        <div className="metric">
+          <CheckCircle2 size={20} />
+          <span>{dict.knowledge.readyDocuments}</span>
+          <strong>{readyDocuments}</strong>
+        </div>
+        <div className="metric">
+          <Database size={20} />
+          <span>{dict.knowledge.pendingEmbedding}</span>
+          <strong>{pendingDocuments}</strong>
         </div>
       </section>
 

@@ -8,10 +8,15 @@ import { useEffect, useState } from "react";
 import { StatePanel } from "@/components/page-state";
 import { StatusBadge } from "@/components/status-badge";
 import { apiGet, apiPost, demoTrace } from "@/lib/api";
-import { compactId } from "@/lib/format";
+import { compactId, formatDate } from "@/lib/format";
 import { dictionaries, normalizeLocale, type Locale } from "@/lib/i18n";
 
 const activeRunStatuses = new Set(["queued", "running"]);
+
+function approvalReplyPreview(reply: string): string {
+  const [preview] = reply.split(/\n\s*\n(?:引用来源：|引用来源:|Sources?:|References?:)/i);
+  return preview?.trim() || reply;
+}
 
 export function RunTraceView({
   initialTrace,
@@ -127,7 +132,7 @@ export function RunTraceView({
       </section>
 
       <section className="metrics-grid" aria-label={dict.trace.metricsLabel}>
-        <div className="metric">
+        <div className="metric metric-compact">
           <GitBranch size={20} />
           <span>{dict.trace.currentNode}</span>
           <strong>{trace.run.current_node}</strong>
@@ -185,6 +190,49 @@ export function RunTraceView({
               <StatusBadge value={verifierStatus} locale={activeLocale} />
             </div>
             <p className="body-copy">{trace.run.verifier_report.summary ?? "-"}</p>
+          </div>
+
+          <div className="surface">
+            <div className="surface-header">
+              <h2>{dict.trace.approval}</h2>
+              {trace.approval ? (
+                <StatusBadge value={trace.approval.status} locale={activeLocale} />
+              ) : (
+                <StatusBadge value="open" locale={activeLocale} />
+              )}
+            </div>
+            {trace.approval ? (
+              <>
+                <dl className="kv kv-compact">
+                  <div>
+                    <dt>{dict.trace.approvalAction}</dt>
+                    <dd>{trace.approval.action_type}</dd>
+                  </div>
+                  <div>
+                    <dt>{dict.trace.approvalRisk}</dt>
+                    <dd>{trace.approval.risk_level}</dd>
+                  </div>
+                  <div>
+                    <dt>{dict.trace.approvalCreated}</dt>
+                    <dd>{formatDate(trace.approval.created_at, activeLocale)}</dd>
+                  </div>
+                  <div>
+                    <dt>{dict.trace.approvalReason}</dt>
+                    <dd>{trace.approval.reason}</dd>
+                  </div>
+                </dl>
+                <pre className="reply-preview reply-preview-compact">
+                  {approvalReplyPreview(trace.approval.proposed_reply)}
+                </pre>
+              </>
+            ) : (
+              <StatePanel
+                tone="empty"
+                title={dict.state.approvalEmptyTitle}
+                body={dict.state.approvalEmptyBody}
+                compact
+              />
+            )}
           </div>
 
           <div className="surface">

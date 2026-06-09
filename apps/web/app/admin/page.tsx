@@ -100,6 +100,7 @@ export default async function AdminPage() {
   };
   const llmMode = config.llm.mode ?? (config.llm.enabled ? "openai_compatible" : "deterministic_fallback");
   const embeddingMode = embeddings.mode;
+  const authModeStatus = config.auth.mode === "trusted_headers" ? "configured" : "deterministic_fallback";
 
   return (
     <main className="page">
@@ -136,27 +137,58 @@ export default async function AdminPage() {
       <section className="detail-grid">
         <div className="surface">
           <div className="surface-header">
-            <h2>{dict.admin.allowedTools}</h2>
+            <h2>{dict.admin.authBoundary}</h2>
+            <span className={`badge ${modeBadgeClass(authModeStatus)}`}>{config.auth.mode}</span>
           </div>
-          <div className="list">
-            {(config.tools.allowed.length ? config.tools.allowed : ["-"]).map((tool) => (
-              <article className="list-item" key={tool}>
-                <strong>{tool}</strong>
-              </article>
-            ))}
-          </div>
+          <dl className="kv">
+            <div>
+              <dt>{dict.admin.appEnv}</dt>
+              <dd>{config.auth.app_env}</dd>
+            </div>
+            <div>
+              <dt>{dict.admin.trustedRequired}</dt>
+              <dd>{config.auth.trusted_identity_required ? dict.admin.yes : dict.admin.no}</dd>
+            </div>
+            <div>
+              <dt>{dict.admin.trustedSecret}</dt>
+              <dd>{config.auth.trusted_identity_secret_configured ? dict.admin.enabled : dict.admin.disabled}</dd>
+            </div>
+            <div>
+              <dt>{dict.admin.localHeaders}</dt>
+              <dd>{config.auth.local_dev_headers_enabled ? dict.admin.enabled : dict.admin.disabled}</dd>
+            </div>
+          </dl>
         </div>
 
         <div className="surface">
           <div className="surface-header">
-            <h2>{dict.admin.configuredBackends}</h2>
+            <h2>{dict.admin.toolInventory}</h2>
+            <span className="badge badge-neutral">
+              {toolStatuses.length} {dict.admin.tools}
+            </span>
           </div>
-          <div className="list">
-            {(config.tools.configured_backends.length ? config.tools.configured_backends : ["-"]).map((backend) => (
-              <article className="list-item" key={backend}>
-                <strong>{backend}</strong>
-              </article>
-            ))}
+          <div className="summary-section">
+            <strong>{dict.admin.allowedTools}</strong>
+            <div className="summary-pills">
+              {(config.tools.allowed.length ? config.tools.allowed : [dict.admin.noneConfigured]).map((tool) => (
+                <span className="summary-pill" key={tool}>
+                  {tool}
+                </span>
+              ))}
+            </div>
+          </div>
+          <div className="summary-section">
+            <strong>{dict.admin.configuredBackends}</strong>
+            <div className="summary-pills">
+              {(config.tools.configured_backends.length
+                ? config.tools.configured_backends
+                : [dict.admin.noneConfigured]
+              ).map((backend) => (
+                <span className="summary-pill" key={backend}>
+                  {backend}
+                </span>
+              ))}
+            </div>
           </div>
         </div>
       </section>

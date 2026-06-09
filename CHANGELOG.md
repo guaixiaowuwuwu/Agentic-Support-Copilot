@@ -2,6 +2,32 @@
 
 > 本日志按每次更新的能力内容分组，不按日期分组。
 
+## 企业工作台截图收尾
+
+### 新增
+- Dashboard、工单详情、运行追踪、审批队列、知识库、审计和管理员页面补齐截图友好的指标区、状态 badge 和工作台摘要。
+- Trace 页面新增独立审批区块，和 evidence、tool calls、verifier 一起展示从检索到人工审批的完整闭环。
+- Ticket detail 页面新增工单状态、运行状态、证据数和审批状态指标，并在审批区展示动作、风险和原因。
+- Approvals、Knowledge、Audit 页面分别新增审批工作量、RAG 就绪度和审计事件指标。
+- Admin 页面新增身份边界和工具清单摘要，保留 LLM / Embedding 的非敏感配置状态展示。
+- 新增展示截图资产：
+  - `docs/assets/dashboard.png`
+  - `docs/assets/ticket-detail.png`
+  - `docs/assets/run-trace.png`
+  - `docs/assets/approvals.png`
+  - `docs/assets/knowledge.png`
+  - `docs/assets/audit-admin.png`
+
+### 变更
+- 全局表格、列表、指标卡、回复预览和 metadata 区域补齐换行与紧凑样式，减少长 URI、trace id、tool output 和客户回复草稿造成的溢出。
+- Trace 审批草稿在追踪页只展示回复正文预览，引用来源继续由 evidence 卡片承担，避免重复信息干扰截图和测试定位。
+- 页面视觉保持企业工作台风格：信息密度高、克制、可扫描，不做营销式布局。
+
+### 验证
+- 前端 production build 通过：`npm --workspace apps/web run build`。
+- 浏览器 E2E 通过：`npm run test:e2e`。
+- 已用 Playwright 生成并人工抽查 `docs/assets/*.png`，确认无明显文本溢出、重叠、乱码或开发模式指示器。
+
 ## OpenAI opt-in smoke 与非敏感状态展示
 
 ### 新增

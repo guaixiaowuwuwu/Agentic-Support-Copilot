@@ -1,6 +1,6 @@
 import type { AuditLog } from "@support-copilot/shared";
 import Link from "next/link";
-import { ExternalLink, RotateCcw, ScrollText, Search } from "lucide-react";
+import { ExternalLink, RotateCcw, ScrollText, Search, ShieldCheck, Users, Wrench } from "lucide-react";
 
 import { ApiErrorState, StatePanel } from "@/components/page-state";
 import { demoAuditLogs } from "@/lib/api";
@@ -124,6 +124,10 @@ export default async function AuditPage({ searchParams }: AuditPageProps) {
     );
   }
 
+  const actorCount = new Set(auditLogs.map((audit) => audit.actor)).size;
+  const toolEvents = auditLogs.filter((audit) => audit.action.includes("tool")).length;
+  const approvalEvents = auditLogs.filter((audit) => audit.action.includes("approval")).length;
+
   return (
     <main className="page">
       <section className="page-title">
@@ -135,6 +139,29 @@ export default async function AuditPage({ searchParams }: AuditPageProps) {
           <ScrollText size={18} />
           <span>{dict.audit.count}</span>
           <strong>{auditLogs.length}</strong>
+        </div>
+      </section>
+
+      <section className="metrics-grid" aria-label={dict.audit.metricsLabel}>
+        <div className="metric">
+          <ScrollText size={20} />
+          <span>{dict.audit.totalRecords}</span>
+          <strong>{auditLogs.length}</strong>
+        </div>
+        <div className="metric">
+          <Users size={20} />
+          <span>{dict.audit.actors}</span>
+          <strong>{actorCount}</strong>
+        </div>
+        <div className="metric">
+          <Wrench size={20} />
+          <span>{dict.audit.toolEvents}</span>
+          <strong>{toolEvents}</strong>
+        </div>
+        <div className="metric">
+          <ShieldCheck size={20} />
+          <span>{dict.audit.approvalEvents}</span>
+          <strong>{approvalEvents}</strong>
         </div>
       </section>
 

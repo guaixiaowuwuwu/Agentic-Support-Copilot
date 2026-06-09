@@ -1,5 +1,5 @@
 import type { Approval } from "@support-copilot/shared";
-import { ShieldCheck } from "lucide-react";
+import { AlertTriangle, Clock3, Send, ShieldCheck } from "lucide-react";
 import Link from "next/link";
 
 import { ApiErrorState, StatePanel } from "@/components/page-state";
@@ -63,6 +63,13 @@ export default async function ApprovalsPage() {
     );
   }
 
+  const customerReplies = approvals.filter((approval) => approval.action_type === "send_reply").length;
+  const riskReviews = approvals.filter((approval) => approval.risk_level !== "low").length;
+  const oldestApproval = approvals
+    .slice()
+    .sort((left, right) => left.created_at.localeCompare(right.created_at))
+    .at(0);
+
   return (
     <main className="page">
       <section className="page-title">
@@ -73,6 +80,29 @@ export default async function ApprovalsPage() {
         <div className="queue-count">
           <ShieldCheck size={18} />
           <strong>{approvals.length}</strong>
+        </div>
+      </section>
+
+      <section className="metrics-grid" aria-label={dict.approvals.metricsLabel}>
+        <div className="metric">
+          <ShieldCheck size={20} />
+          <span>{dict.approvals.pending}</span>
+          <strong>{approvals.length}</strong>
+        </div>
+        <div className="metric">
+          <Send size={20} />
+          <span>{dict.approvals.customerReplies}</span>
+          <strong>{customerReplies}</strong>
+        </div>
+        <div className="metric">
+          <AlertTriangle size={20} />
+          <span>{dict.approvals.riskReviews}</span>
+          <strong>{riskReviews}</strong>
+        </div>
+        <div className="metric metric-compact">
+          <Clock3 size={20} />
+          <span>{dict.approvals.oldest}</span>
+          <strong>{oldestApproval ? formatDate(oldestApproval.created_at, locale) : "-"}</strong>
         </div>
       </section>
 

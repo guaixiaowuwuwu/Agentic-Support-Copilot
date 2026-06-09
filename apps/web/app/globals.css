@@ -278,6 +278,15 @@ textarea {
   letter-spacing: 0;
 }
 
+.metric .badge {
+  margin-left: auto;
+}
+
+.metric-compact strong {
+  font-size: 17px;
+  line-height: 1.25;
+}
+
 .work-grid,
 .detail-grid,
 .trace-grid {
@@ -601,6 +610,7 @@ th,
 td {
   padding: 13px 16px;
   border-bottom: 1px solid var(--border);
+  overflow-wrap: anywhere;
   text-align: left;
   vertical-align: middle;
 }
@@ -715,6 +725,19 @@ tr:last-child td {
   font-weight: 750;
 }
 
+.kv-compact {
+  padding-bottom: 8px;
+}
+
+.kv-compact div:last-child {
+  grid-column: 1 / -1;
+}
+
+.kv-compact dd {
+  font-size: 13px;
+  line-height: 1.45;
+}
+
 .ticket-body,
 .body-copy,
 .empty-state {
@@ -738,6 +761,12 @@ tr:last-child td {
   font-family:
     ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
   font-size: 13px;
+}
+
+.reply-preview-compact {
+  max-height: 220px;
+  overflow: auto;
+  border-top: 1px solid var(--border);
 }
 
 .surface > .button-pair,
@@ -851,6 +880,18 @@ tr:last-child td {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+  min-width: 0;
+}
+
+.timeline-head strong,
+.list-head strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.timeline-head .badge,
+.list-head .badge {
+  flex: 0 0 auto;
 }
 
 .timeline-content p,
@@ -883,6 +924,8 @@ tr:last-child td {
   display: inline-flex;
   align-items: center;
   gap: 5px;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 
 .list {
@@ -903,6 +946,42 @@ tr:last-child td {
   color: var(--accent);
   font-size: 12px;
   font-weight: 850;
+}
+
+.summary-section {
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.summary-section:last-child {
+  border-bottom: 0;
+}
+
+.summary-section > strong {
+  display: block;
+  margin-bottom: 10px;
+  font-size: 13px;
+}
+
+.summary-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.summary-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  max-width: 100%;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #f8fafb;
+  color: #3c444c;
+  font-size: 12px;
+  font-weight: 750;
+  overflow-wrap: anywhere;
 }
 
 @media (max-width: 940px) {

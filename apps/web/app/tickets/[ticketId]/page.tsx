@@ -1,5 +1,5 @@
 import type { RunTrace, Ticket } from "@support-copilot/shared";
-import { GitBranch, ShieldCheck } from "lucide-react";
+import { FileSearch, GitBranch, ShieldCheck, TicketCheck } from "lucide-react";
 import Link from "next/link";
 
 import { ApiErrorState, StatePanel } from "@/components/page-state";
@@ -80,6 +80,7 @@ export default async function TicketPage({ params }: { params: Promise<{ ticketI
 
   const trace = traceResult?.ok ? traceResult.trace : null;
   const traceError = traceResult && !traceResult.ok ? traceResult.error : null;
+  const approvalStatus = trace?.approval?.status ?? (ticket.status === "awaiting_approval" ? "pending" : "open");
 
   return (
     <main className="page">
@@ -89,6 +90,29 @@ export default async function TicketPage({ params }: { params: Promise<{ ticketI
           <h1>{ticket.subject}</h1>
         </div>
         {hasCapability(user, "start_run") ? <StartRunButton ticketId={ticket.id} locale={locale} /> : null}
+      </section>
+
+      <section className="metrics-grid" aria-label={dict.ticketDetail.metricsLabel}>
+        <div className="metric metric-compact">
+          <TicketCheck size={20} />
+          <span>{dict.ticketDetail.ticketStatus}</span>
+          <StatusBadge value={ticket.status} locale={locale} />
+        </div>
+        <div className="metric metric-compact">
+          <GitBranch size={20} />
+          <span>{dict.ticketDetail.runStatus}</span>
+          {trace ? <StatusBadge value={trace.run.status} locale={locale} /> : <strong>{ticket.run_ids.length}</strong>}
+        </div>
+        <div className="metric">
+          <FileSearch size={20} />
+          <span>{dict.ticketDetail.evidence}</span>
+          <strong>{trace?.evidence.length ?? 0}</strong>
+        </div>
+        <div className="metric metric-compact">
+          <ShieldCheck size={20} />
+          <span>{dict.ticketDetail.approvalStatus}</span>
+          <StatusBadge value={approvalStatus} locale={locale} />
+        </div>
       </section>
 
       <section className="detail-grid">
@@ -144,6 +168,10 @@ export default async function TicketPage({ params }: { params: Promise<{ ticketI
                   <dt>{dict.ticketDetail.risk}</dt>
                   <dd>{trace.run.triage.risk_level ?? "-"}</dd>
                 </div>
+                <div>
+                  <dt>{dict.ticketDetail.tools}</dt>
+                  <dd>{trace.tool_calls.length}</dd>
+                </div>
               </dl>
               <div className="action-row">
                 <Link className="icon-button" href={`/runs/${trace.run.id}/trace`} title={dict.common.openRunTrace}>
@@ -170,6 +198,20 @@ export default async function TicketPage({ params }: { params: Promise<{ ticketI
             <h2>{dict.common.approval}</h2>
             <StatusBadge value={trace.approval.status} locale={locale} />
           </div>
+          <dl className="kv kv-compact">
+            <div>
+              <dt>{dict.ticketDetail.approvalAction}</dt>
+              <dd>{trace.approval.action_type}</dd>
+            </div>
+            <div>
+              <dt>{dict.ticketDetail.risk}</dt>
+              <dd>{trace.approval.risk_level}</dd>
+            </div>
+            <div>
+              <dt>{dict.ticketDetail.approvalReason}</dt>
+              <dd>{trace.approval.reason}</dd>
+            </div>
+          </dl>
           <pre className="reply-preview">{trace.approval.proposed_reply}</pre>
           {trace.approval.status === "pending" && hasCapability(user, "approval_decision") ? (
             <ApprovalButtons approvalId={trace.approval.id} locale={locale} />
